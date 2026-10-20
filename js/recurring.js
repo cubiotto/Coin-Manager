@@ -35,7 +35,7 @@ export function dueRecurring(rules, hasId, todayIso, now = new Date().toISOStrin
       if (hasId(id)) continue;
       out.push({
         id, date, name: r.name, amount: r.amount, category: r.category, type: r.type ?? 'expense',
-        raw: 'Khoản cố định hằng tháng', recurringId: r.id, createdAt: now, updatedAt: now,
+        raw: 'Khoản cố định hằng tháng', recurringId: r.id, ...(r.assetId ? { assetId: r.assetId } : {}), createdAt: now, updatedAt: now,
       });
     }
   }

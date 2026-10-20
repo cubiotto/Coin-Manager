@@ -49,6 +49,9 @@ export function mergeProfile(local = {}, remote = {}) {
     recurring: latestById(local.recurring, remote.recurring),
     wallets: latestById(local.wallets, remote.wallets),
     allocs: latestById(local.allocs, remote.allocs),
+    // Tài sản + các lần chuyển / điều chỉnh số dư: cũng theo từng mục
+    assets: latestById(local.assets, remote.assets),
+    assetMoves: latestById(local.assetMoves, remote.assetMoves),
     custom: { extraKeywords: winner.extraKeywords ?? {}, added: [...added.values()] },
     customUpdatedAt: remoteNewer ? remote.customUpdatedAt : local.customUpdatedAt,
     learned: { ...(remote.learned ?? {}), ...(local.learned ?? {}) },

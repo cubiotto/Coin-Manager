@@ -13,6 +13,10 @@ import {
   WALLET_ICONS, WALLET_SUGGEST, JARS, liveWallets, isSaving, parseShare, shareText, walletForCategory, planSplit,
   walletBalances, unallocated, upsertWallet, nextTint, nextOrder, monthStart,
 } from './wallets.js';
+import {
+  ASSET_KINDS, ASSET_ICONS, ASSET_SUGGEST, liveAssets, liveMoves, defaultAsset, upsertAsset, parseAliases, assignAssets, assetBalances,
+  nextAssetTint, nextAssetOrder,
+} from './assets.js';
 import { dueRecurring, nextDue, startYmFor, activeRules, nextYm, ymOf } from './recurring.js';
 import {
   fmtVND, fmtNum, fmtCompact, today, addDays, monthOf, shiftMonth, daysInMonth, monthLabel, dayLabel, escapeHtml, capitalize,
@@ -37,6 +41,8 @@ const state = {
   recurring: [],          // khoản cố định hằng tháng (trong hồ sơ đã mã hoá)
   wallets: [],            // ví nhỏ: ăn uống, tiết kiệm… (trong hồ sơ đã mã hoá)
   allocs: [],             // các lần chia tiền / chuyển tiền vào ví
+  assets: [],             // tài sản: tiền mặt, ngân hàng, ví điện tử… (trong hồ sơ đã mã hoá)
+  assetMoves: [],         // các lần chuyển giữa tài sản / điều chỉnh số dư
   categories: buildCategories(),
   // Không nhạy cảm
   settings: { ...DEFAULT_SETTINGS },
@@ -45,6 +51,7 @@ const state = {
   preview: null,
   histQ: '',
   histCat: '',
+  histAsset: '',
   dailyAll: false,
   catTab: 'donut',        // panel danh mục: 'donut' (Tỉ lệ) | 'list' (Danh mục)
   selecting: false,       // đang chọn khoản để gộp
@@ -87,12 +94,14 @@ function applyProfile(p) {
   state.recurring = p?.recurring ?? [];
   state.wallets = p?.wallets ?? [];
   state.allocs = p?.allocs ?? [];
+  state.assets = p?.assets ?? [];
+  state.assetMoves = p?.assetMoves ?? [];
   state.meta = p?.meta ?? {};
   state.categories = buildCategories(state.custom);
 }
 
 const profileNow = () => ({ custom: state.custom, customUpdatedAt: state.customUpdatedAt, learned: state.learned, meta: state.meta, recurring: state.recurring,
-  wallets: state.wallets, allocs: state.allocs });
+  wallets: state.wallets, allocs: state.allocs, assets: state.assets, assetMoves: state.assetMoves });
 const saveProfile = () => store.saveProfile(profileNow());
 
 function forgetSensitive() {
@@ -121,6 +130,7 @@ async function init() {
   setupEditDialog();
   setupCalc();
   setupWallets();
+  setupAssets();
   enhanceDateInputs();
   watchDialogs();
   // Back đóng bảng đang mở → về mục lịch sử cũ; giữ địa chỉ đúng tab đang xem (để tải lại không nhảy tab)
@@ -156,6 +166,11 @@ function onGlobalClick(e) {
   if (wallet) return openWallet(wallet.dataset.wallet);
   if (e.target.closest('[data-wallet-new]')) return openWallet();
   if (e.target.closest('[data-wallet-jars]')) return useJars();
+  const asset = e.target.closest('[data-asset]');
+  if (asset) return openAsset(asset.dataset.asset);
+  if (e.target.closest('[data-asset-new]')) return openAsset();
+  const sug = e.target.closest('[data-asset-suggest]');
+  if (sug) return openAsset(null, ASSET_SUGGEST[Number(sug.dataset.assetSuggest)]);
   const tx = e.target.closest('.tx[data-id]');
   if (tx) return state.selecting && state.view === 'history' ? toggleSelect(tx.dataset.id) : openEdit(tx.dataset.id);
   const catTab = e.target.closest('[data-cat-tab]');
@@ -366,7 +381,27 @@ async function loadUnlockedData() {
 }
 
 // Khoản ghi lúc đang khoá chưa có danh mục tự thêm / phần đã học → phân loại lại nếu bạn không tự chọn
-function finalizeInboxItem({ catAuto, ...t }) {
+// Ghi lúc đang khoá thì chưa đọc được danh sách tài sản (nằm trong hồ sơ đã mã hoá) →
+// mở khoá xong mới nhận diện, theo từng câu nói ("bánh 25 nước 25 tiền mặt": cả hai khoản dùng Tiền mặt)
+function resolveInboxAssets(list) {
+  const groups = new Map();
+  for (const t of list) {
+    if (!t.assetAuto || t.assetId) continue;
+    const key = `${t.createdAt}|${t.raw}`;
+    groups.set(key, [...(groups.get(key) ?? []), t]);
+  }
+  const def = defaultAsset(state.assets)?.id;
+  for (const g of groups.values()) {
+    const named = assignAssets(g.map(t => ({ name: t.name.toLowerCase() })), state.assets);
+    g.forEach((t, i) => {
+      if (named[i].name !== t.name.toLowerCase()) t.name = capitalize(named[i].name) || catById(t.category).name;
+      const id = named[i].assetId ?? def;
+      if (id) t.assetId = id;
+    });
+  }
+}
+
+function finalizeInboxItem({ catAuto, assetAuto, ...t }) {
   if (catAuto) {
     const c = classify(t.name, state.categories, state.learned);
     if (c && catById(c).type === t.type) t.category = c;
@@ -379,6 +414,7 @@ async function ingestInbox() {
   if (!items.length) return { count: 0, failed };
   // Ai cùng origin cũng ghi được vào hộp chờ (khoá công khai để dạng thường) → chỉ nhận khoản hợp lệ
   const valid = items.filter(isValidTx);
+  resolveInboxAssets(valid);
   const txs = valid.map(finalizeInboxItem);
   await store.putTx(txs);                       // ghi trước, xoá hộp chờ sau → không mất nếu bị ngắt giữa chừng
   await store.deleteInbox(items.map(i => i.id));
@@ -569,11 +605,13 @@ function setupRecord() {
 }
 
 function toPreviewItems(raw, parsed, batch) {
-  return parsed.items.map(it => {
+  // "thịt bò năm mươi nghìn tiền mặt" → tên "thịt bò", trừ vào Tiền mặt (đang khoá: chưa có danh sách tài sản, nhận diện sau)
+  const def = defaultAsset(state.assets)?.id ?? '';
+  return assignAssets(parsed.items, state.assets).map(it => {
     let category = classify(it.name, state.categories, state.learned);
     const type = parsed.type ?? (category ? catById(category).type : 'expense');
     if (!category || catById(category).type !== type) category = FALLBACK[type];
-    return { name: capitalize(it.name), amount: it.amount, category, suggested: category, raw, batch };
+    return { name: capitalize(it.name), amount: it.amount, category, suggested: category, assetId: it.assetId ?? def, raw, batch };
   });
 }
 
@@ -626,9 +664,13 @@ function renderPreview() {
   const p = state.preview;
   $('#preview').hidden = false;
   $('#pv-date').value = p.date;
+  const withAssets = store.unlocked && liveAssets(state.assets).length > 0;
   $('#preview-items').innerHTML = p.items.map((it, i) => `
     <div class="pv-item${it.amount > 0 ? '' : ' warn'}" data-i="${i}">
-      <input class="pv-name" data-f="name" value="${esc(it.name)}" placeholder="Tên khoản" aria-label="Tên khoản">
+      <div class="pv-top${withAssets ? ' with-asset' : ''}">
+        <input class="pv-name" data-f="name" value="${esc(it.name)}" placeholder="Tên khoản" aria-label="Tên khoản">
+        ${withAssets ? `<select class="pv-asset" data-f="assetId" aria-label="Tài sản">${assetOptions(it.assetId)}</select>` : ''}
+      </div>
       <div class="pv-row">
         <span class="amount-field"><input data-f="amount" value="${it.amount ? fmtNum(it.amount) : ''}" placeholder="Số tiền" aria-label="Số tiền" autocomplete="off"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span>
         <select data-f="category" aria-label="Danh mục">${categoryOptions(it.category)}</select>
@@ -702,7 +744,7 @@ async function savePreview() {
     const cat = catById(it.category);
     return {
       id: crypto.randomUUID(), date: p.date, name: capitalize(it.name.trim()) || cat.name, amount: it.amount,
-      category: cat.id, type: cat.type, raw: it.raw, createdAt: now, updatedAt: now,
+      category: cat.id, type: cat.type, ...(it.assetId ? { assetId: it.assetId } : {}), raw: it.raw, createdAt: now, updatedAt: now,
     };
   });
   // Dọn khung chờ ngay (trước khi await) để câu nói kế tiếp không bị cuốn theo
@@ -712,7 +754,7 @@ async function savePreview() {
   try {
     if (unlocked) await store.putTx(txs);
     // Đang khoá: mã hoá một chiều vào hộp chờ, mở khoá xong mới đọc được
-    else await store.addToInbox(txs.map((t, i) => ({ ...t, catAuto: p.items[i].category === p.items[i].suggested })));
+    else await store.addToInbox(txs.map((t, i) => ({ ...t, catAuto: p.items[i].category === p.items[i].suggested, assetAuto: !t.assetId })));
   } catch {
     state.preview = state.preview ? { ...state.preview, items: [...p.items, ...state.preview.items] } : p;
     renderPreview();
@@ -724,7 +766,7 @@ async function savePreview() {
     state.txs.push(...txs);
     await learnFrom(txs);
     renderTopbar();
-    note = walletNote(txs);
+    note = assetNote(txs) + walletNote(txs);
   }
   // Có thể ghi từ tab bất kỳ → vẽ lại đúng tab đang xem
   renderView(state.view);
@@ -769,7 +811,8 @@ async function removeTx(ids) {
 function txItem(t, { showDate = false, timeline = false } = {}) {
   const c = catById(t.category);
   const sign = t.type === 'income' ? '+' : '−';
-  const sub = (t.recurringId ? '🔁 ' : '') + (showDate ? `${dayLabel(t.date)} · ${c.name}` : c.name);
+  const asset = t.assetId ? assetById(t.assetId) : null;
+  const sub = (t.recurringId ? '🔁 ' : '') + (showDate ? `${dayLabel(t.date)} · ${c.name}` : c.name) + (asset ? ` · ${asset.icon} ${asset.name}` : '');
   const splits = t.splits?.length
     ? `<span class="tx-splits">${t.splits.map(s => `${esc(s.name)} ${fmtCompact(s.amount)}`).join(' · ')}</span>` : '';
   const btn = `<button type="button" class="tx tint-${c.tint}" data-id="${esc(t.id)}">
@@ -797,6 +840,7 @@ function renderSummary() {
 
 async function renderToday() {
   renderSummary();
+  renderAssets();
   renderWallets();
   if (!store.unlocked) {
     $('#today-total').textContent = '';
@@ -821,6 +865,7 @@ async function renderToday() {
 function setupHistory() {
   $('#hist-q').addEventListener('input', e => { state.histQ = e.target.value; renderHistory(); });
   $('#hist-cat').addEventListener('change', e => { state.histCat = e.target.value; renderHistory(); });
+  $('#hist-asset').addEventListener('change', e => { state.histAsset = e.target.value; renderHistory(); });
   $('#select-btn').addEventListener('click', () => (state.selecting ? stopSelecting() : startSelecting()));
   $('#merge-cancel').addEventListener('click', stopSelecting);
   $('#merge-go').addEventListener('click', openMerge);
@@ -836,12 +881,19 @@ function renderHistory() {
   renderMonthNavs();
   $('#hist-cat').innerHTML = `<option value="">Tất cả danh mục</option>${categoryOptions(state.histCat)}`;
   $('#hist-cat').value = state.histCat;
+  // Lọc theo tài sản: chỉ hiện khi đã có tài sản (hoặc đang lọc dở)
+  const hasAssets = liveAssets(state.assets).length > 0 || !!state.histAsset;
+  $('#hist-asset').hidden = !hasAssets;
+  $('.filters').classList.toggle('has-asset', hasAssets);
+  if (hasAssets) $('#hist-asset').innerHTML = assetOptions(state.histAsset, 'Tất cả tài sản');
   const q = normalize(state.histQ);
   const cat = state.histCat;
+  const asset = state.histAsset;
   const names = t => [t.name, ...(t.splits ?? []).map(s => s.name)];
   const list = state.txs
     .filter(t => monthOf(t.date) === state.month
       && (!cat || partsOf(t).some(p => p.category === cat))
+      && (!asset || t.assetId === asset)
       && (!q || names(t).some(n => normalize(n).includes(q))))
     .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 
@@ -1108,6 +1160,8 @@ function setupEditDialog() {
     });
     if (clean.length) t.splits = clean;
     else delete t.splits;
+    if (f.elements.assetId.value) t.assetId = f.elements.assetId.value;
+    else delete t.assetId;
     await store.putTx([t]);
     await learnFrom([t, ...clean.map(s => ({ name: s.name, category: s.category, type: cat.type }))]);
     renderTopbar();
@@ -1208,6 +1262,8 @@ function openEdit(id) {
   f.elements.amount.value = fmtNum(t.amount);
   f.elements.category.innerHTML = categoryOptions(t.category);
   f.elements.date.value = t.date;
+  f.elements.assetId.innerHTML = assetOptions(t.assetId ?? '');
+  $('#edit-asset-row').hidden = !liveAssets(state.assets).length && !t.assetId;
   $('#edit-raw').textContent = t.raw ? `Câu gốc: “${t.raw}”` : '';
   editSplits = (t.splits ?? []).map(s => ({ ...s }));
   $('#split-input').value = '';
@@ -1399,15 +1455,16 @@ function exportCsv() {
   // Mỗi món của hoá đơn đã chia là một dòng, cột "Hoá đơn" cho biết thuộc khoản nào
   const rows = [...state.txs].sort((a, b) => a.date.localeCompare(b.date)).flatMap(t => partsOf(t).map(p => [
     t.date, q(t.name), q(p.name), t.type === 'income' ? p.amount : -p.amount, t.type === 'income' ? 'Thu' : 'Chi',
-    q(catById(p.category).name), q(t.raw),
+    q(catById(p.category).name), q(t.assetId ? (assetById(t.assetId)?.name ?? '') : ''), q(t.raw),
   ].join(',')));
-  download(`coin-manager-${today()}.csv`, `﻿Ngày,Hoá đơn,Món,Số tiền,Loại,Danh mục,Câu nói\n${rows.join('\n')}`, 'text/csv');
+  download(`coin-manager-${today()}.csv`, `﻿Ngày,Hoá đơn,Món,Số tiền,Loại,Danh mục,Tài sản,Câu nói\n${rows.join('\n')}`, 'text/csv');
 }
 
 const isValidSplit = s => s && typeof s.name === 'string' && Number.isFinite(s.amount) && s.amount > 0 && typeof s.category === 'string';
 const isValidTx = t => t && typeof t.id === 'string' && typeof t.name === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
   && Number.isFinite(t.amount) && t.amount > 0 && (t.type === 'income' || t.type === 'expense') && typeof t.category === 'string'
-  && (t.splits === undefined || (Array.isArray(t.splits) && t.splits.every(isValidSplit) && sum(t.splits) <= t.amount));
+  && (t.splits === undefined || (Array.isArray(t.splits) && t.splits.every(isValidSplit) && sum(t.splits) <= t.amount))
+  && (t.assetId === undefined || typeof t.assetId === 'string');
 
 async function readFileJson(input) {
   const file = input.files[0];
@@ -1449,7 +1506,9 @@ async function importBackup(e) {
     return toast('File không phải bản sao lưu của Coin Manager');
   }
 
-  const incoming = result.txs.filter(t => isValidTx(t) || isTomb(t)).map(t => (isTomb(t) ? t : finalizeInboxItem(t)));
+  const usable = result.txs.filter(t => isValidTx(t) || isTomb(t));
+  resolveInboxAssets(usable.filter(t => !isTomb(t)));
+  const incoming = usable.map(t => (isTomb(t) ? t : finalizeInboxItem(t)));
   if (!confirm(`Gộp ${incoming.length} khoản từ file? Cùng một khoản thì giữ bản sửa sau cùng.`)) return;
   const { rows, pulledIds } = mergeRows([...state.txs, ...state.tombs], incoming);
   await store.putTx(rows.filter(r => pulledIds.has(r.id)));
@@ -1831,6 +1890,297 @@ function setupWallets() {
   });
 }
 
+// ---------- Tài sản: tiền mặt, ngân hàng, ví điện tử, thẻ tín dụng… ----------
+// Tài sản + các lần chuyển / điều chỉnh nằm trong hồ sơ đã mã hoá. Khoản thu/chi có assetId thì cộng/trừ vào đó (xem js/assets.js).
+
+const assetById = id => liveAssets(state.assets).find(a => a.id === id);
+const assetStats = () => assetBalances(state.assets, state.assetMoves, state.txs, monthOf(today()));
+
+/** <option> chọn tài sản. noneLabel: dòng đầu (không gắn / mặc định / tất cả). */
+function assetOptions(selected, noneLabel = 'Không tính vào tài sản') {
+  const list = liveAssets(state.assets);
+  const opt = (id, label) => `<option value="${esc(id)}"${id === selected ? ' selected' : ''}>${esc(label)}</option>`;
+  return opt('', noneLabel) + list.map(a => opt(a.id, `${a.icon} ${a.name}`)).join('')
+    + (selected && !list.some(a => a.id === selected) ? opt(selected, '(tài sản đã xoá)') : '');
+}
+
+/** "💵 Tiền mặt còn 1,2tr" cho các tài sản vừa bị trừ / cộng. */
+function assetNote(txs) {
+  const ids = [...new Set(txs.map(t => t.assetId).filter(id => id && assetById(id)))].slice(0, 2);
+  if (!ids.length) return '';
+  const stats = assetStats();
+  return ' · ' + ids.map(id => {
+    const a = assetById(id);
+    const b = stats.get(id).balance;
+    return `${a.icon} ${a.name} ${b < 0 ? `${a.kind === 'credit' ? 'nợ' : 'âm'} ${fmtCompact(-b)}` : `còn ${fmtCompact(b)}`}`;
+  }).join(', ');
+}
+
+function renderAssets() {
+  $('#asset-card').hidden = !store.unlocked;
+  if (!store.unlocked) return;
+  const list = liveAssets(state.assets);
+  $('#asset-actions').hidden = list.length < 2;
+  if (!list.length) {
+    $('#asset-total').textContent = '';
+    $('#asset-strip').innerHTML = `<div class="wallet-empty">
+      <p class="muted">Ghi lại tiền đang nằm ở đâu — tiền mặt, ngân hàng, Momo… Nói kèm tên tài sản khi ghi (<q>thịt bò năm mươi nghìn tiền mặt</q>) là app tự trừ đúng chỗ.</p>
+      <div class="btn-row"><button type="button" class="btn primary" data-asset-suggest="0">💵 Thêm Tiền mặt</button><button type="button" class="btn" data-asset-new>+ Tài sản khác</button></div>
+    </div>`;
+    return;
+  }
+  const stats = assetStats();
+  const total = list.reduce((s, a) => s + stats.get(a.id).balance, 0);
+  const totalEl = $('#asset-total');
+  totalEl.textContent = `Tổng ${signedCompact(total)}`;
+  totalEl.classList.toggle('neg', total < 0);
+  $('#asset-strip').innerHTML = list.map(a => {
+    const s = stats.get(a.id);
+    const debt = a.kind === 'credit' && s.balance < 0;
+    const sub = [debt ? 'đang nợ' : a.isDefault ? '★ mặc định' : ASSET_KINDS[a.kind]?.label ?? '',
+      s.monthOut ? `chi ${fmtCompact(s.monthOut)}` : ''].filter(Boolean).join(' · ');
+    return `<button type="button" class="wallet-tile tint-${a.tint}${s.balance < 0 && !debt ? ' over' : ''}" data-asset="${esc(a.id)}">
+      <span class="wt-head"><span class="wt-icon" aria-hidden="true">${esc(a.icon)}</span><span class="wt-name">${esc(a.name)}</span></span>
+      <b class="wt-bal">${signedCompact(s.balance)}</b>
+      <span class="wt-sub">${esc(sub)}</span>
+    </button>`;
+  }).join('') + '<button type="button" class="wallet-tile wallet-add" data-asset-new><span aria-hidden="true">+</span><span class="wt-sub">Thêm</span></button>';
+}
+
+function refreshAssetViews() {
+  renderAssets();
+  if ($('#asset-dialog').open && assetEditing) renderAssetDetail(assetById(assetEditing.id) ?? assetEditing);
+}
+
+/** Ô số dư: "1,2tr", "-2tr" (thẻ tín dụng đang nợ), "0" hoặc trống = 0. Sai → null. */
+function parseBalance(text) {
+  const s = String(text ?? '').trim();
+  if (!s || /^[-−]?0+$/.test(s)) return 0;
+  const neg = /^[-−]/.test(s);
+  const v = parseMoney(neg ? s.slice(1) : s);
+  return v == null ? null : neg ? -v : v;
+}
+const balanceText = n => (n ? `${n < 0 ? '-' : ''}${fmtNum(Math.abs(n))}` : '0');
+
+let assetEditing = null;
+
+function renderAssetDetail(a) {
+  const s = assetStats().get(a.id);
+  const label = s.balance < 0 ? (a.kind === 'credit' ? 'Đang nợ' : 'Âm') : 'Số dư';
+  $('#asset-stat').innerHTML = `<b class="${s.balance < 0 && a.kind !== 'credit' ? 'bad' : ''}">${label} ${fmtVND(Math.abs(s.balance))}</b>
+    <span>Tháng ${Number(today().slice(5, 7))}: thu ${fmtVND(s.monthIn)} · chi ${fmtVND(s.monthOut)}</span>`;
+  const list = liveMoves(state.assetMoves, state.assets).filter(m => m.asset === a.id || m.from === a.id || m.to === a.id)
+    .sort((x, y) => y.date.localeCompare(x.date) || (y.createdAt ?? '').localeCompare(x.createdAt ?? '')).slice(0, 12);
+  $('#asset-history').innerHTML = list.length ? list.map(m => {
+    const other = id => assetById(id)?.name ?? 'tài sản đã xoá';
+    const amt = m.kind === 'adjust' ? m.amount : m.from === a.id ? -m.amount : m.amount;
+    const what = m.kind === 'adjust' ? 'điều chỉnh số dư' : m.from === a.id ? `chuyển sang ${other(m.to)}` : `nhận từ ${other(m.from)}`;
+    return `<li><span><b>${amt < 0 ? '−' : '+'}${fmtVND(Math.abs(amt))}</b><small>${esc(dayLabel(m.date))} · ${esc(what)}</small></span>
+      <button type="button" class="icon-btn" data-amove-del="${esc(m.id)}" aria-label="Xoá lần này">✕</button></li>`;
+  }).join('') : '<li class="empty">Chưa có lần chuyển hay điều chỉnh nào.</li>';
+}
+
+function fillAssetForm(s) {
+  const f = $('#asset-form');
+  f.elements.name.value = s.name ?? '';
+  f.elements.kind.value = s.kind ?? 'cash';
+  f.elements.icon.value = s.icon ?? ASSET_KINDS[f.elements.kind.value].icon;
+  f.elements.aliases.value = (s.aliases ?? []).join(', ');
+}
+
+function openAsset(id, suggest) {
+  if (!store.unlocked) return;
+  const f = $('#asset-form');
+  const a = id ? assetById(id) : null;
+  assetEditing = a;
+  f.reset();
+  setFormError(f, '');
+  $('#asset-title').textContent = a ? `${a.icon} ${a.name}` : 'Thêm tài sản';
+  $('#asset-suggest').hidden = !!a;
+  $('#asset-delete').hidden = !a;
+  $('#asset-more').hidden = !a;
+  $('#asset-stat').hidden = !a;
+  $('#asset-balance-label').textContent = a ? 'Số dư hiện tại' : 'Số dư ban đầu';
+  fillAssetForm(a ?? suggest ?? {});
+  f.elements.balance.value = a ? balanceText(assetStats().get(a.id).balance) : '';
+  // Tài sản đầu tiên tự là mặc định
+  f.elements.isDefault.checked = a ? !!a.isDefault : !defaultAsset(state.assets);
+  updateAssetBalanceHint();
+  if (a) renderAssetDetail(a);
+  $('#asset-dialog').showModal();
+}
+
+function updateAssetBalanceHint() {
+  const f = $('#asset-form');
+  const v = parseBalance(f.elements.balance.value);
+  const credit = f.elements.kind.value === 'credit';
+  const cur = assetEditing ? assetStats().get(assetEditing.id)?.balance ?? 0 : null;
+  $('#asset-balance-hint').textContent = v == null ? 'Chưa hiểu — ví dụ 1,5tr hoặc 500k'
+    : cur != null && v !== cur ? `Sẽ ghi một lần điều chỉnh ${v > cur ? '+' : '−'}${fmtVND(Math.abs(v - cur))} hôm nay`
+      : credit ? 'Thẻ tín dụng đang nợ thì nhập số âm, ví dụ -2tr'
+        : assetEditing ? 'Đổi số này nếu đếm lại thấy lệch — app ghi phần chênh lệch' : 'Số tiền đang có lúc bắt đầu theo dõi';
+}
+
+async function removeAssetMoves(ids, msg) {
+  const now = new Date().toISOString();
+  const gone = state.assetMoves.filter(m => !m.deleted && ids.includes(m.id));
+  state.assetMoves = state.assetMoves.map(m => (ids.includes(m.id) ? { id: m.id, deleted: true, updatedAt: now } : m));
+  await saveProfile();
+  refreshAssetViews();
+  toast(msg, {
+    action: 'Hoàn tác',
+    onAction: async () => {
+      const t = new Date().toISOString();
+      state.assetMoves = state.assetMoves.map(m => (ids.includes(m.id) ? { ...gone.find(g => g.id === m.id), updatedAt: t } : m));
+      await saveProfile();
+      refreshAssetViews();
+    },
+  });
+}
+
+function openAssetMove(fromId) {
+  if (!store.unlocked) return;
+  const list = liveAssets(state.assets);
+  if (list.length < 2) return toast('Cần ít nhất 2 tài sản để chuyển tiền');
+  const f = $('#amove-form');
+  f.reset();
+  setFormError(f, '');
+  const from = assetById(fromId)?.id ?? list[0].id;
+  const to = list.find(a => a.id !== from).id;
+  const opts = sel => list.map(a => `<option value="${esc(a.id)}"${a.id === sel ? ' selected' : ''}>${esc(a.icon)} ${esc(a.name)}</option>`).join('');
+  f.elements.from.innerHTML = opts(from);
+  f.elements.to.innerHTML = opts(to);
+  f.elements.date.value = today();
+  updateAssetMoveHint();
+  $('#amove-dialog').showModal();
+}
+
+function updateAssetMoveHint() {
+  const f = $('#amove-form');
+  const a = assetById(f.elements.from.value);
+  if (!a) return;
+  const bal = assetStats().get(a.id).balance;
+  const amount = parseMoney(f.elements.amount.value) ?? 0;
+  $('#amove-hint').textContent = `${a.icon} ${a.name} đang ${bal < 0 ? `${a.kind === 'credit' ? 'nợ' : 'âm'} ${fmtVND(-bal)}` : `có ${fmtVND(bal)}`}`
+    + (amount > bal && a.kind !== 'credit' ? ' — chuyển xong sẽ âm' : '');
+}
+
+function setupAssets() {
+  $('#asset-icons').innerHTML = ASSET_ICONS.map(i =>
+    `<label class="icon-opt"><input type="radio" name="icon" value="${i}" aria-label="${i}"><span aria-hidden="true">${i}</span></label>`).join('');
+  $('#asset-kind').innerHTML = Object.entries(ASSET_KINDS).map(([k, v]) => `<option value="${k}">${v.icon} ${esc(v.label)}</option>`).join('');
+  $('#asset-suggest').innerHTML = ASSET_SUGGEST.map((s, i) =>
+    `<button type="button" class="chip" data-asuggest="${i}">${esc(s.icon)} ${esc(s.name)}</button>`).join('');
+  $('#asset-move').addEventListener('click', () => openAssetMove());
+
+  const f = $('#asset-form');
+  $('#asset-suggest').addEventListener('click', e => {
+    const chip = e.target.closest('[data-asuggest]');
+    if (!chip) return;
+    fillAssetForm(ASSET_SUGGEST[Number(chip.dataset.asuggest)]);
+    updateAssetBalanceHint();
+  });
+  // Đổi loại → đổi biểu tượng theo (nếu đang là biểu tượng của một loại)
+  const kindIcons = new Set(Object.values(ASSET_KINDS).map(k => k.icon));
+  f.elements.kind.addEventListener('change', () => {
+    if (!f.elements.icon.value || kindIcons.has(f.elements.icon.value)) f.elements.icon.value = ASSET_KINDS[f.elements.kind.value].icon;
+    updateAssetBalanceHint();
+  });
+  f.elements.balance.addEventListener('input', updateAssetBalanceHint);
+  $('#asset-history').addEventListener('click', e => {
+    const del = e.target.closest('[data-amove-del]');
+    if (del) removeAssetMoves([del.dataset.amoveDel], 'Đã xoá');
+  });
+  $('#asset-move-from').addEventListener('click', () => openAssetMove(assetEditing?.id));
+  $('#asset-show-history').addEventListener('click', () => {
+    if (!assetEditing) return;
+    state.histAsset = assetEditing.id;
+    state.histCat = '';
+    state.month = monthOf(today());
+    $('#asset-dialog').close();
+    showView('history');
+  });
+
+  f.addEventListener('submit', async e => {
+    if (e.submitter?.value !== 'save' || !store.unlocked) return;
+    const name = capitalize(f.elements.name.value.trim());
+    const balance = parseBalance(f.elements.balance.value);
+    if (!name || balance == null) {
+      e.preventDefault();
+      return setFormError(f, !name ? 'Nhập tên tài sản.' : 'Số dư chưa đúng — ví dụ 1,5tr hoặc -2tr.');
+    }
+    const kind = f.elements.kind.value;
+    const fields = {
+      name, kind, icon: f.elements.icon.value || ASSET_KINDS[kind].icon,
+      aliases: parseAliases(f.elements.aliases.value), isDefault: f.elements.isDefault.checked,
+    };
+    const now = new Date().toISOString();
+    let a;
+    let adjust = null;
+    if (assetEditing) {
+      a = { ...assetEditing, ...fields };
+      const cur = assetStats().get(a.id)?.balance ?? 0;
+      if (balance !== cur) {
+        adjust = { id: crypto.randomUUID(), date: today(), kind: 'adjust', asset: a.id, amount: balance - cur, createdAt: now, updatedAt: now };
+      }
+    } else {
+      a = { id: crypto.randomUUID(), tint: nextAssetTint(state.assets), order: nextAssetOrder(state.assets), opening: balance, createdAt: now, ...fields };
+    }
+    state.assets = upsertAsset(state.assets, a, now);
+    if (adjust) state.assetMoves = [...state.assetMoves, adjust];
+    await saveProfile();
+    renderAssets();
+    toast(`Đã ${assetEditing ? 'lưu' : 'thêm'} “${name}”${adjust ? ` · điều chỉnh ${adjust.amount > 0 ? '+' : '−'}${fmtCompact(Math.abs(adjust.amount))}` : ''}`
+      + (a.isDefault ? ' · tài sản mặc định' : ''));
+  });
+
+  $('#asset-delete').addEventListener('click', async () => {
+    const a = assetEditing;
+    if (!a || !confirm(`Xoá tài sản “${a.name}”? Các khoản đã ghi vẫn giữ nguyên, chỉ thôi tính vào tài sản này.`)) return;
+    const now = new Date().toISOString();
+    const before = state.assets;
+    state.assets = state.assets.map(x => (x.id === a.id ? { id: a.id, deleted: true, updatedAt: now } : x));
+    // Xoá tài sản mặc định → tài sản đầu tiên còn lại làm mặc định
+    const next = a.isDefault ? liveAssets(state.assets)[0] : null;
+    if (next) state.assets = upsertAsset(state.assets, { ...next, isDefault: true }, now);
+    await saveProfile();
+    $('#asset-dialog').close();
+    renderAssets();
+    toast(`Đã xoá “${a.name}”`, {
+      action: 'Hoàn tác',
+      onAction: async () => {
+        const t = new Date().toISOString();
+        state.assets = before.map(x => ({ ...x, updatedAt: t }));
+        await saveProfile();
+        renderAssets();
+      },
+    });
+  });
+
+  // ----- Chuyển tiền giữa các tài sản (rút ATM, nạp Momo, trả thẻ tín dụng) -----
+  const mf = $('#amove-form');
+  mf.addEventListener('input', updateAssetMoveHint);
+  mf.addEventListener('change', updateAssetMoveHint);
+  mf.addEventListener('submit', async e => {
+    if (e.submitter?.value !== 'ok' || !store.unlocked) return;
+    const from = mf.elements.from.value;
+    const to = mf.elements.to.value;
+    const amount = parseMoney(mf.elements.amount.value);
+    if (from === to || !(amount > 0)) {
+      e.preventDefault();
+      return setFormError(mf, from === to ? 'Chọn hai tài sản khác nhau.' : 'Số tiền chưa hợp lệ.');
+    }
+    const now = new Date().toISOString();
+    const m = { id: crypto.randomUUID(), date: mf.elements.date.value || today(), kind: 'move', from, to, amount, createdAt: now, updatedAt: now };
+    state.assetMoves = [...state.assetMoves, m];
+    await saveProfile();
+    refreshAssetViews();
+    toast(`Đã chuyển ${fmtVND(amount)}: ${assetById(from).name} → ${assetById(to).name}`, {
+      action: 'Hoàn tác', onAction: () => removeAssetMoves([m.id], 'Đã huỷ lần chuyển'),
+    });
+  });
+}
+
 // ---------- Khoản cố định hằng tháng ----------
 
 /** Ghi các khoản cố định đã tới ngày (ghi bù nếu lỡ). Trả về số khoản vừa ghi. */
@@ -1839,6 +2189,9 @@ async function runRecurring({ quiet = false } = {}) {
   const ids = new Set([...state.txs, ...state.tombs].map(t => t.id));
   const due = dueRecurring(state.recurring, id => ids.has(id), today());
   if (!due.length) return 0;
+  // Khoản cố định chưa chọn tài sản → trừ vào tài sản mặc định lúc ghi
+  const def = defaultAsset(state.assets)?.id;
+  if (def) due.forEach(t => { t.assetId ??= def; });
   await store.putTx(due);
   state.txs.push(...due);
   if (!quiet) toast(`🔁 Đã ghi ${due.length} khoản cố định: ${[...new Set(due.map(t => t.name))].join(', ')}`);
@@ -1853,10 +2206,11 @@ function renderRecurring() {
   $('#rec-total').textContent = monthly ? `${fmtVND(monthly)}/tháng` : '';
   $('#rec-list').innerHTML = rules.length ? rules.map(r => {
     const c = catById(r.category);
+    const asset = r.assetId ? assetById(r.assetId) : null;
     return `<li><button type="button" class="tx rec-row tint-${c.tint}${r.active ? '' : ' off'}" data-rec="${esc(r.id)}">
       <span class="tx-icon" aria-hidden="true">${esc(c.icon)}</span>
       <span class="tx-main"><span class="tx-name">${esc(r.name)}</span>
-        <span class="tx-sub">Ngày ${r.day} hằng tháng · ${r.active ? `kế tiếp ${shortDate(nextDue(r, today()))}` : 'đang tắt'}</span></span>
+        <span class="tx-sub">Ngày ${r.day} hằng tháng · ${r.active ? `kế tiếp ${shortDate(nextDue(r, today()))}` : 'đang tắt'}${asset ? ` · ${esc(asset.icon)} ${esc(asset.name)}` : ''}</span></span>
       <span class="tx-amt">${fmtVND(r.amount)}</span>
     </button></li>`;
   }).join('') : '<li class="empty">Chưa có khoản nào.</li>';
@@ -1881,6 +2235,8 @@ function openRec(id) {
   f.elements.amount.value = rule ? fmtNum(rule.amount) : '';
   f.elements.day.value = String(rule?.day ?? Number(today().slice(8)));
   f.elements.category.innerHTML = categoryOptions(rule?.category ?? 'giai-tri');
+  f.elements.assetId.innerHTML = assetOptions(rule?.assetId ?? '', 'Tài sản mặc định');
+  $('#rec-asset-row').hidden = !liveAssets(state.assets).length && !rule?.assetId;
   f.elements.active.checked = rule?.active ?? true;
   updateRecThisMonth();
   $('#rec-dialog').showModal();
@@ -1946,6 +2302,8 @@ function setupRecurring() {
         startYm: f.elements.thisMonth.checked ? ymOf(t) : nextYm(ymOf(t)), updatedAt: now,
       };
     }
+    if (f.elements.assetId.value) rule.assetId = f.elements.assetId.value;
+    else delete rule.assetId;
     state.recurring = [...state.recurring.filter(r => r.id !== rule.id), rule];
     await saveProfile();
     const n = await runRecurring({ quiet: true });
@@ -2026,6 +2384,10 @@ let mergeCatTouched = false;
 function openMerge() {
   mergeItems = selectedTxs();
   if (mergeItems.length < 2) return;
+  // Hoá đơn chỉ trừ vào một tài sản — gộp khoản tiền mặt với khoản Momo sẽ làm sai số dư
+  if (new Set(mergeItems.map(t => t.assetId ?? '')).size > 1) {
+    return toast('Các khoản này trả bằng tài sản khác nhau — sửa cho giống nhau rồi gộp');
+  }
   const f = $('#merge-form');
   const type = mergeItems[0].type;
   // Gợi ý: danh mục chiếm nhiều tiền nhất, ngày muộn nhất
@@ -2074,6 +2436,7 @@ function setupMerge() {
       // Khoản đã chia sẵn thì lấy từng món của nó, nên gộp lồng nhau vẫn phẳng
       splits: originals.flatMap(t => partsOf(t).map(p => ({ id: crypto.randomUUID(), name: p.name, amount: p.amount, category: p.category }))),
       raw: originals.map(t => t.raw).filter(Boolean).join(' · '),
+      ...(originals[0].assetId ? { assetId: originals[0].assetId } : {}),
       createdAt: now,
       updatedAt: now,
     };

@@ -35,6 +35,24 @@ Mẫu câu: **`[món] [giá] [món] [giá] …`** — không cần đọc đơn 
 - Thêm từ khoá riêng trong **Cài đặt → Danh mục & từ khoá**: chạm vào danh mục, gõ từ khoá, bấm **Lưu**. Từ khoá bạn thêm thắng từ khoá có sẵn khi dài bằng nhau (ví dụ thêm "bánh" cho Đi chợ).
 - Nút 🎤 nằm giữa thanh dưới cùng (tầm ngón cái) và dùng được ở mọi tab; kết quả + nút Lưu hiện ngay phía trên nút.
 
+## Tài sản
+
+Thẻ **🏦 Tài sản** ở tab Hôm nay: tiền thật đang nằm ở đâu — Tiền mặt, Ngân hàng, Momo / ZaloPay, Thẻ tín dụng… và tổng tài sản.
+
+- **Nói kèm tài sản khi ghi:** *"thịt bò năm mươi nghìn tiền mặt"* → Thịt bò 50.000đ (Đi chợ & siêu thị), trừ vào **Tiền mặt**. Hiểu cả *"bằng momo"*, *"quẹt thẻ"*, *"chuyển khoản"*; khoản thu *"nhận lương mười lăm triệu vào vietcombank"* thì cộng vào.
+- Cả câu chỉ nhắc một tài sản → mọi khoản trong câu dùng tài sản đó (*"bánh 25 nước ngọt 25 tiền mặt"*). Mỗi khoản một tài sản: *"bánh 25 tiền mặt nước ngọt 25 momo"*.
+- Không nhắc tài sản nào → dùng **tài sản mặc định** (★). Đổi được ở bảng xem trước, hoặc sau này trong *Sửa khoản*.
+- **Tạo / sửa:** tên, loại, biểu tượng, số dư, và *"Khi nói, gọi là"* (các cách gọi khác: `tiền mặt, cash`). Tên tài sản luôn được nhận; gõ không dấu (*tien mat*) cũng được.
+- **Điều chỉnh số dư:** sửa ô *Số dư hiện tại* khi đếm lại thấy lệch → app ghi phần chênh lệch (xem / xoá trong chi tiết tài sản).
+- **⇄ Chuyển tiền giữa tài sản:** rút ATM, nạp Momo, trả thẻ tín dụng — không tính là thu/chi.
+- **Thẻ tín dụng:** số dư âm = đang nợ; chi bằng thẻ làm nợ tăng, chuyển tiền trả thẻ làm nợ giảm.
+- **Lịch sử** lọc được theo tài sản; **khoản cố định** chọn được tài sản (Netflix → Thẻ tín dụng); xuất CSV có cột *Tài sản*.
+- Khoản cũ (trước khi có tài sản) không tính vào số dư nào. Gộp khoản chỉ gộp được các khoản cùng tài sản.
+- Ghi lúc đang khoá: app chưa đọc được danh sách tài sản (đã mã hoá) nên nhận diện ngay khi bạn mở khoá.
+- Tài sản và các lần chuyển / điều chỉnh được **mã hoá** cùng hồ sơ và đồng bộ qua Google Drive.
+
+**Tài sản khác Ví thế nào?** Ví (chia hũ) là ngân sách theo danh mục, Tài sản là nơi tiền nằm. Một khoản chi *"phở 55 tiền mặt"* vừa trừ ví *Ăn uống*, vừa trừ tài sản *Tiền mặt*.
+
 ## Ví nhỏ (chia hũ)
 
 Thẻ **👛 Các ví** ở tab Hôm nay: chia thu nhập vào các ví như ăn uống, tiết kiệm, học phí… rồi nhìn là biết mỗi ví còn bao nhiêu.
@@ -180,6 +198,7 @@ js/voice.js            Web Speech API (vi-VN)
 js/charts.js           biểu đồ cột theo ngày, donut tỉ lệ (SVG, không thư viện)
 js/recurring.js        khoản cố định hằng tháng (tính ngày tới hạn, ghi bù)
 js/wallets.js          ví nhỏ / chia hũ (số dư, gợi ý chia tiền theo tỉ lệ)
+js/assets.js           tài sản (nhận diện "tiền mặt", "bằng momo" trong câu nói, số dư, chuyển / điều chỉnh)
 js/datepicker.js       lịch chọn ngày theo theme
 js/sheets.js           nút Back đóng hộp thoại, vuốt xuống để đóng bảng
 icons/duck*.svg        linh vật vịt (vẽ tay bằng SVG)

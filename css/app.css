@@ -720,3 +720,10 @@ dialog label.icon-opt { display: block; position: relative; cursor: pointer; }
 .alloc-row .tx-icon { width: 38px; height: 38px; font-size: 19px; border-radius: 12px; }
 .alloc-row .tx-name { font-size: 15px; }
 .alloc-row .amount-field input { min-height: 42px; padding: 6px 56px 6px 10px; border-radius: 12px; background: var(--surface); font-size: 15px; }
+
+/* ---------- Tài sản ---------- */
+.asset-card .card-title .muted.neg { color: var(--bad); }
+.asset-actions { grid-template-columns: minmax(0, 1fr); }
+.pv-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: center; }
+.pv-top.with-asset { grid-template-columns: minmax(0, 1fr) minmax(0, .9fr); }
+.filters.has-asset #hist-q { grid-column: 1 / -1; }
