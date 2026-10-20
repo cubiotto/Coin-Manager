@@ -8,7 +8,8 @@
 //    trang này đưa quyền truy cập về app qua BroadcastChannel + localStorage (app đọc xong xoá ngay, hết hạn sau 5 phút).
 // Quyền truy cập (~1 giờ) chỉ giữ trong bộ nhớ của app.
 
-const CLIENT_ID = '427368913266-13117203mqq82vf7ov99vlasn4jejgnf.apps.googleusercontent.com';
+import { GOOGLE_CLIENT_ID as CLIENT_ID } from '../config/google.js';
+
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const FILE_NAME = 'coin-manager-sync.json';
 const API = 'https://www.googleapis.com';
@@ -132,6 +133,9 @@ const POPUP_ERRORS = {
  */
 export async function getToken({ hint, action = 'sync' } = {}) {
   if (hasValidToken()) return token.value;
+  if (!/^[\w-]+\.apps\.googleusercontent\.com$/.test(CLIENT_ID) || CLIENT_ID.startsWith('PASTE_')) {
+    throw new Error('Chưa cấu hình Google: điền Client ID vào config/google.js.');
+  }
   if (isStandalone()) return tokenViaRedirect({ hint, action });
   const oauth2 = await loadGis();
   return new Promise((resolve, reject) => {
