@@ -85,6 +85,11 @@
       </div>
     </section>
 
+    <section id="debt-card" class="card debt-card" hidden>
+      <h2 class="card-title"><span>🤝 Người khác nợ bạn</span><span id="debt-total" class="muted"></span></h2>
+      <ul id="debt-people" class="debt-people"></ul>
+    </section>
+
     <section id="wallet-card" class="card wallet-card" hidden>
       <h2 class="card-title"><span>👛 Các ví</span><span id="wallet-free" class="muted"></span></h2>
       <div id="wallet-strip" class="wallet-strip"></div>
@@ -116,6 +121,8 @@
         <li><q>đổ xăng một trăm rưỡi</q> → 150.000đ · <q>tiền nhà ba triệu hai</q> → 3.200.000đ</li>
         <li><q>bánh mì hai ổ ba mươi</q> → “Bánh mì hai ổ” 30.000đ <span class="muted">(ổ, ly, chai, kg… là số lượng)</span></li>
         <li><q>hôm qua phở năm lăm</q> → ghi vào hôm qua · <q>nhận lương mười lăm triệu</q> → khoản thu</li>
+        <li><q>lẩu năm trăm lâm nợ hai trăm rưỡi</q> · <q>tiền mua game đã được anh Lâm trả lại 257k</q> → ghi <b>ai nợ / ai trả lại</b>, thống kê tính chi thực</li>
+        <li><q>pizza ba trăm giảm năm mươi</q> · <q>áo 400k giảm 20%</q> → ghi số đã trả, kèm phần được <b>giảm giá</b></li>
         <li><q>thịt bò năm mươi nghìn tiền mặt</q> · <q>cà phê hai lăm bằng momo</q> → trừ vào đúng <b>tài sản</b> (không nói thì dùng tài sản mặc định)</li>
       </ul>
       <p class="muted">Vẫn hiểu khi có đơn vị: nghìn/ngàn/k/ca, triệu/tr, tỷ. Tiếng lóng củ (triệu), lít/xị (trăm nghìn) bật/tắt trong Cài đặt.
@@ -254,6 +261,10 @@
     </div>
     <label>Danh mục <select name="category"></select></label>
     <label id="edit-asset-row">Tài sản <select name="assetId"></select></label>
+    <div id="edit-discount-row">
+      <label>🏷️ Được giảm (voucher, khuyến mãi) <span class="amount-field"><input name="discount" autocomplete="off" placeholder="Không có"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span></label>
+      <p id="edit-discount-hint" class="muted hint"></p>
+    </div>
 
     <section class="split-box" aria-labelledby="split-title">
       <div class="split-head">
@@ -267,6 +278,21 @@
       <p id="split-status" class="hint muted" hidden></p>
       <ul id="split-list" class="split-list"></ul>
       <div id="split-rest" class="split-rest"></div>
+    </section>
+
+    <section id="debt-box" class="split-box" aria-labelledby="debt-title">
+      <div class="split-head"><h3 id="debt-title">🤝 Chi hộ · được trả lại</h3></div>
+      <ul id="debt-list" class="split-list debt-list"></ul>
+      <div class="debt-add">
+        <input id="debt-person" type="text" autocomplete="off" placeholder="Ai? vd: anh Lâm" aria-label="Người">
+        <span class="amount-field"><input id="debt-amount" autocomplete="off" placeholder="Số tiền" aria-label="Số tiền"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span>
+      </div>
+      <div class="debt-add-btns">
+        <button type="button" class="btn" id="debt-owe">🤝 Ghi nợ</button>
+        <button type="button" class="btn" id="debt-paid">↩️ Đã trả lại</button>
+      </div>
+      <label id="debt-asset-row" class="debt-asset">Tiền trả lại về <select id="debt-asset"></select></label>
+      <p id="debt-sum" class="split-rest"></p>
     </section>
 
     <p class="muted" id="edit-raw"></p>
@@ -473,6 +499,24 @@
     <div class="row-end">
       <button class="btn ghost" value="cancel" formnovalidate>Huỷ</button>
       <button class="btn primary" value="ok">Chuyển</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="repay-dialog" class="sheet">
+  <form id="repay-form" method="dialog" autocomplete="off">
+    <h2 id="repay-title">↩️ Đã trả lại</h2>
+    <p class="muted hint">Trả vào các khoản cũ trước. Chi thực của từng khoản giảm theo, tiền cộng vào tài sản bạn chọn.</p>
+    <ul id="repay-items" class="merge-list"></ul>
+    <div class="row-2 money-row">
+      <label>Số tiền <span class="amount-field"><input name="amount" required><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span></label>
+      <label>Ngày <input name="date" type="date" required></label>
+    </div>
+    <label id="repay-asset-row">Về tài sản <select name="assetId"></select></label>
+    <p class="form-error" role="alert"></p>
+    <div class="row-end">
+      <button class="btn ghost" value="cancel" formnovalidate>Huỷ</button>
+      <button class="btn primary" value="ok">Lưu</button>
     </div>
   </form>
 </dialog>

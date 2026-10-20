@@ -11,6 +11,11 @@ import { enhanceDateInputs } from './datepicker.js';
 import { openLayer, watchDialogs } from './sheets.js';
 import { enableMouseScroll } from './strips.js';
 import {
+  detectRefund, detectOwe, extractOwes, matchTargets, recentExpenses, knownPeople, netAmount, netParts, refundedOf, owedOn,
+  debtsByPerson, planRepayment, personKey, displayPerson,
+} from './refunds.js';
+import { extractDiscounts, prepPercent, parseDiscountInput, originalOf, savings } from './discounts.js';
+import {
   WALLET_ICONS, WALLET_SUGGEST, JARS, liveWallets, isSaving, parseShare, shareText, walletForCategory, planSplit,
   walletBalances, unallocated, upsertWallet, nextTint, nextOrder, monthStart,
 } from './wallets.js';
@@ -26,6 +31,8 @@ import {
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const sum = list => list.reduce((s, t) => s + t.amount, 0);
+// Tổng chi thực: khoản được bạn bè trả lại chỉ tính phần mình thật sự tiêu (xem js/refunds.js)
+const spentOf = list => list.reduce((s, t) => s + (t.type === 'expense' ? netAmount(t) : 0), 0);
 const esc = escapeHtml;
 
 const DEFAULT_SETTINGS = { slang: true, autoSave: false, lockAfter: 5, autoSync: true, googleConnected: false };
@@ -73,13 +80,15 @@ function categoryOptions(selected, onlyType) {
 }
 
 // Một hoá đơn đã chia = các món + phần còn lại (tính vào danh mục của hoá đơn). Thống kê dùng từng phần.
-function partsOf(t) {
+function grossParts(t) {
   const splits = t.splits ?? [];
   const parts = splits.map(s => ({ name: s.name, amount: s.amount, category: s.category }));
   const rest = t.amount - sum(splits);
   if (rest > 0 || !splits.length) parts.push({ name: t.name, amount: splits.length ? rest : t.amount, category: t.category });
   return parts;
 }
+// Các phần tính theo chi thực (đã trừ phần bạn bè trả lại, chia đều theo tỉ lệ các món)
+const partsOf = t => netParts(grossParts(t), t);
 
 const timeOf = iso => {
   const d = new Date(iso);
@@ -132,6 +141,7 @@ async function init() {
   setupCalc();
   setupWallets();
   setupAssets();
+  setupDebts();
   enableMouseScroll([$('#asset-strip'), $('#wallet-strip')]);
   enhanceDateInputs();
   watchDialogs();
@@ -248,7 +258,7 @@ function renderTopbar() {
   btn.textContent = store.unlocked ? '🔓 Khoá' : '🔒 Mở khoá';
   btn.setAttribute('aria-label', store.unlocked ? 'Khoá ngay' : 'Mở khoá');
   const ym = monthOf(today());
-  const spent = sum(state.txs.filter(t => t.type === 'expense' && monthOf(t.date) === ym));
+  const spent = spentOf(state.txs.filter(t => monthOf(t.date) === ym));
   $('#month-spent').textContent = spent ? `T${Number(ym.slice(5))}: ${fmtCompact(spent)}` : '';
 }
 
@@ -606,14 +616,50 @@ function setupRecord() {
   $('#pv-save').addEventListener('click', savePreview);
 }
 
+// Khoản chi có thể là khoản được hoàn / ghi nợ: khớp tên trước, rồi các khoản gần đây để chọn tay
+function refundCandidates(item) {
+  const sure = matchTargets(item, state.txs, today());
+  const ids = [...new Set([...sure.slice(0, 6).map(m => m.tx.id),
+    ...recentExpenses(state.txs, item.kind === 'refund' ? item.amount : 0).map(t => t.id)])].slice(0, 12);
+  return { ids, best: sure[0]?.sure ? sure[0].tx.id : '' };
+}
+
+/**
+ * Một câu nói → các dòng chờ lưu:
+ *  - khoản chi / thu ("thịt bò năm mươi nghìn tiền mặt"), có thể kèm ai nợ ("lẩu 500 lâm nợ 250")
+ *  - hoàn tiền cho khoản cũ ("tiền mua game đã được anh Lâm trả lại 257k") — kind 'refund'
+ *  - ghi nợ cho khoản cũ ("lâm nợ tiền lẩu 250") — kind 'owe'
+ * Đang khoá: chưa đọc được khoản cũ → câu hoàn tiền / ghi nợ trả về kind 'locked' (cần mở khoá).
+ */
 function toPreviewItems(raw, parsed, batch) {
   // "thịt bò năm mươi nghìn tiền mặt" → tên "thịt bò", trừ vào Tiền mặt (đang khoá: chưa có danh sách tài sản, nhận diện sau)
   const def = defaultAsset(state.assets)?.id ?? '';
-  return assignAssets(parsed.items, state.assets).map(it => {
+  const known = knownPeople(state.txs);
+  const unlocked = store.unlocked;
+  // Thứ tự: tách tài sản → giảm giá ("pizza 300 giảm 50") → ai nợ (tính trên số đã trả)
+  return extractOwes(extractDiscounts(assignAssets(parsed.items, state.assets))).map(it => {
+    if (parsed.type !== 'expense' && !it.owes) {
+      const r = parsed.type === 'income' ? null : detectRefund(it.name, { known, strict: unlocked });
+      const o = r || parsed.type ? null : detectOwe(it.name, { known });
+      if ((r || o) && !unlocked) return { kind: 'locked', name: it.name, amount: it.amount, raw, batch };
+      if (r) {
+        const item = { kind: 'refund', person: r.person, target: r.target, amount: it.amount, assetId: it.assetId ?? def, raw, batch };
+        const c = refundCandidates(item);
+        return { ...item, candidates: c.ids, txId: c.best };
+      }
+      if (o) {
+        const item = { kind: 'owe', person: o.person, target: o.target, amount: it.amount, raw, batch };
+        const c = refundCandidates(item);
+        return { ...item, candidates: c.ids, txId: c.best };
+      }
+    }
     let category = classify(it.name, state.categories, state.learned);
     const type = parsed.type ?? (category ? catById(category).type : 'expense');
     if (!category || catById(category).type !== type) category = FALLBACK[type];
-    return { name: capitalize(it.name), amount: it.amount, category, suggested: category, assetId: it.assetId ?? def, raw, batch };
+    return {
+      kind: 'tx', name: capitalize(it.name), amount: it.amount, category, suggested: category, assetId: it.assetId ?? def,
+      ...(it.owes && type === 'expense' ? { owes: it.owes } : {}), ...(it.discount && type === 'expense' ? { discount: it.discount } : {}), raw, batch,
+    };
   });
 }
 
@@ -621,7 +667,7 @@ function handleAlternatives(alts, source) {
   const opts = { slang: state.settings.slang };
   const seen = new Set();
   const parsed = alts.filter(t => !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()))
-    .map(t => ({ t, r: parseUtterance(t, opts) }));
+    .map(t => ({ t, r: parseUtterance(prepPercent(t), opts) }));
   const best = parsed.find(p => p.r.items.length) ?? parsed[0];
   showCapture(true);
   showTranscript(best.t, false);
@@ -630,17 +676,26 @@ function handleAlternatives(alts, source) {
     setMicStatus('Chưa nghe ra số tiền. Thử nói kèm đơn vị, ví dụ <q>mười lăm nghìn</q>.', true);
     return;
   }
-  setMicStatus('Kiểm tra lại rồi bấm <b>Lưu</b>');
+  const batch = ++batchSeq;
+  const all = toPreviewItems(best.t, best.r, batch);
+  const items = all.filter(it => it.kind !== 'locked');
+  if (!items.length) {
+    // Câu hoàn tiền / ghi nợ lúc đang khoá: phải đọc được các khoản cũ mới biết hoàn cho khoản nào
+    setMicStatus('↩️ Câu này là hoàn tiền / ghi nợ cho khoản cũ — <button type="button" class="btn chip-btn" data-unlock>Mở khoá</button> rồi nói lại nhé.', true);
+    return;
+  }
+  setMicStatus(items.length < all.length ? 'Phần hoàn tiền cần mở khoá mới ghi được — kiểm tra phần còn lại rồi bấm <b>Lưu</b>'
+    : 'Kiểm tra lại rồi bấm <b>Lưu</b>');
 
   // Câu mới được thêm vào phần đang chờ lưu, không ghi đè
-  const batch = ++batchSeq;
   if (!state.preview) state.preview = { items: [], date: today() };
-  state.preview.items.push(...toPreviewItems(best.t, best.r, batch));
+  state.preview.items.push(...items);
   if (best.r.dateOffset) state.preview.date = addDays(today(), best.r.dateOffset);
   renderPreview();
   renderAlts(parsed.filter(p => p !== best && p.r.items.length).slice(0, 3), batch);
 
-  if (source === 'voice' && state.settings.autoSave && state.preview.items.every(it => it.amount > 0 && it.name)) {
+  // Tự lưu chỉ cho khoản thường — hoàn tiền / ghi nợ cần nhìn lại xem đúng khoản chưa
+  if (source === 'voice' && state.settings.autoSave && state.preview.items.every(it => it.kind === 'tx' && it.amount > 0 && it.name)) {
     startAutoSave();
   }
 }
@@ -655,7 +710,8 @@ function renderAlts(options, batch) {
     const b = e.target.closest('[data-alt]');
     if (!b || !state.preview) return;
     const o = options[Number(b.dataset.alt)];
-    state.preview.items = state.preview.items.filter(it => it.batch !== batch).concat(toPreviewItems(o.t, o.r, batch));
+    state.preview.items = state.preview.items.filter(it => it.batch !== batch)
+      .concat(toPreviewItems(o.t, o.r, batch).filter(it => it.kind !== 'locked'));
     showTranscript(o.t, false);
     el.hidden = true;
     renderPreview();
@@ -667,7 +723,7 @@ function renderPreview() {
   $('#preview').hidden = false;
   $('#pv-date').value = p.date;
   const withAssets = store.unlocked && liveAssets(state.assets).length > 0;
-  $('#preview-items').innerHTML = p.items.map((it, i) => `
+  $('#preview-items').innerHTML = p.items.map((it, i) => (it.kind === 'refund' || it.kind === 'owe' ? previewDebtRow(it, i, withAssets) : `
     <div class="pv-item${it.amount > 0 ? '' : ' warn'}" data-i="${i}">
       <div class="pv-top${withAssets ? ' with-asset' : ''}">
         <input class="pv-name" data-f="name" value="${esc(it.name)}" placeholder="Tên khoản" aria-label="Tên khoản">
@@ -678,9 +734,51 @@ function renderPreview() {
         <select data-f="category" aria-label="Danh mục">${categoryOptions(it.category)}</select>
         <button class="icon-btn pv-del" type="button" data-i="${i}" aria-label="Bỏ khoản này">✕</button>
       </div>
-    </div>`).join('');
+      ${previewNotes(it)}
+    </div>`)).join('');
   updateSaveButton();
 }
+
+
+/** Dòng nhỏ dưới khoản trong bảng xem trước: giảm giá, ai nợ. */
+function previewNotes(it) {
+  const notes = [];
+  if (it.discount > 0) notes.push(`🏷️ Giảm ${fmtVND(it.discount)} · giá gốc ${fmtVND(it.amount + it.discount)}`);
+  if (it.owes?.length) notes.push(`🤝 ${it.owes.map(o => `${o.person} nợ ${fmtVND(o.amount)}`).join(' · ')}`);
+  return notes.map(n => `<p class="pv-note">${esc(n)}</p>`).join('');
+}
+
+/** "Tiền mua game · 500k · 15/10 · Lâm nợ 257k" */
+function txChoiceLabel(t, person) {
+  const left = person ? owedOn(t).get(personKey(person))?.left : 0;
+  const refunded = refundedOf(t);
+  return `${t.name} · ${fmtCompact(t.amount)} · ${shortDate(t.date)}${left ? ` · ${person} nợ ${fmtCompact(left)}` : ''}`
+    + (refunded ? ` · đã hoàn ${fmtCompact(refunded)}` : '');
+}
+
+// Dòng hoàn tiền / ghi nợ cho khoản cũ trong bảng xem trước
+function previewDebtRow(it, i, withAssets) {
+  const refund = it.kind === 'refund';
+  const txs = it.candidates.map(id => state.txs.find(t => t.id === id)).filter(Boolean);
+  const opt = (id, label) => `<option value="${esc(id)}"${id === it.txId ? ' selected' : ''}>${esc(label)}</option>`;
+  const options = opt('', it.target ? `Chọn khoản “${it.target}”…` : 'Chọn khoản chi…')
+    + txs.map(t => opt(t.id, txChoiceLabel(t, it.person))).join('')
+    + (refund ? opt(INCOME_CHOICE, 'Không thuộc khoản nào — ghi là khoản thu') : '');
+  const ok = it.amount > 0 && it.txId;
+  return `<div class="pv-item pv-debt${ok ? '' : ' warn'}" data-i="${i}">
+      <p class="pv-kind">${refund ? '↩️ Được trả lại' : '🤝 Ghi nợ'}</p>
+      <div class="pv-top">
+        <input class="pv-name" data-f="person" value="${esc(it.person)}" placeholder="Ai?" aria-label="Người ${refund ? 'trả' : 'nợ'}">
+      </div>
+      <select class="pv-target" data-f="txId" aria-label="Khoản chi">${options}</select>
+      <div class="pv-row${refund && withAssets ? '' : ' no-cat'}">
+        <span class="amount-field"><input data-f="amount" value="${it.amount ? fmtNum(it.amount) : ''}" placeholder="Số tiền" aria-label="Số tiền" autocomplete="off"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span>
+        ${refund && withAssets ? `<select data-f="assetId" aria-label="Về tài sản">${assetOptions(it.assetId, 'Không tính vào tài sản')}</select>` : ''}
+        <button class="icon-btn pv-del" type="button" data-i="${i}" aria-label="Bỏ dòng này">✕</button>
+      </div>
+    </div>`;
+}
+const INCOME_CHOICE = '__income';
 
 function onPreviewEdit(e) {
   const p = state.preview;
@@ -693,16 +791,18 @@ function onPreviewEdit(e) {
   if (f === 'amount') {
     it.amount = parseAmountInput(e.target.value, { slang: state.settings.slang }) ?? 0;
     if (e.type === 'change' && it.amount) e.target.value = fmtNum(it.amount);
-    row.classList.toggle('warn', !(it.amount > 0));
   } else {
     it[f] = e.target.value;
   }
+  row.classList.toggle('warn', !previewItemOk(it));
   updateSaveButton();
 }
 
+const previewItemOk = it => it.amount > 0 && (it.kind === 'tx' || (!!it.txId && !!it.person?.trim()));
+
 function updateSaveButton(countdown) {
   const items = state.preview?.items ?? [];
-  const ok = items.length && items.every(it => it.amount > 0);
+  const ok = items.length && items.every(previewItemOk);
   const btn = $('#pv-save');
   btn.disabled = !ok;
   const total = sum(items.filter(it => it.amount > 0));
@@ -740,23 +840,55 @@ function clearPreview() {
 async function savePreview() {
   cancelAutoSave();
   const p = state.preview;
-  if (!p || !p.items.length || p.items.some(it => !(it.amount > 0))) return;
+  if (!p || !p.items.length || !p.items.every(previewItemOk)) return;
+  const unlocked = store.unlocked;
+  if (!unlocked && p.items.some(it => it.kind !== 'tx')) return;
   const now = new Date().toISOString();
-  const txs = p.items.map(it => {
+  const plain = p.items.filter(it => it.kind === 'tx' || (it.kind === 'refund' && it.txId === INCOME_CHOICE));
+  const txs = plain.map(it => {
+    if (it.kind === 'refund') {
+      // Tiền trả lại không thuộc khoản chi nào → ghi là khoản thu
+      const cat = catById(FALLBACK.income);
+      return {
+        id: crypto.randomUUID(), date: p.date, name: `${displayPerson(it.person)} trả lại`, amount: it.amount, category: cat.id, type: 'income',
+        ...(it.assetId ? { assetId: it.assetId } : {}), raw: it.raw, createdAt: now, updatedAt: now,
+      };
+    }
     const cat = catById(it.category);
     return {
       id: crypto.randomUUID(), date: p.date, name: capitalize(it.name.trim()) || cat.name, amount: it.amount,
-      category: cat.id, type: cat.type, ...(it.assetId ? { assetId: it.assetId } : {}), raw: it.raw, createdAt: now, updatedAt: now,
+      category: cat.id, type: cat.type, ...(it.assetId ? { assetId: it.assetId } : {}),
+      ...(it.owes?.length && cat.type === 'expense' ? { owes: it.owes } : {}),
+      ...(it.discount > 0 && cat.type === 'expense' ? { discount: it.discount } : {}), raw: it.raw, createdAt: now, updatedAt: now,
     };
   });
+  // Hoàn tiền / ghi nợ cho khoản cũ: sửa khoản đó (giữ bản cũ để hoàn tác)
+  const originals = new Map();
+  const updated = new Map();
+  for (const it of p.items) {
+    if ((it.kind !== 'refund' && it.kind !== 'owe') || it.txId === INCOME_CHOICE) continue;
+    const base = updated.get(it.txId) ?? state.txs.find(t => t.id === it.txId);
+    if (!base) continue;
+    if (!originals.has(base.id)) originals.set(base.id, base);
+    const person = displayPerson(it.person);
+    const t = { ...base, updatedAt: now };
+    if (it.kind === 'refund') {
+      t.refunds = [...(base.refunds ?? []), {
+        id: crypto.randomUUID(), person, amount: Math.min(it.amount, netAmount(base)), ...(it.assetId ? { assetId: it.assetId } : {}),
+        date: p.date, createdAt: now,
+      }];
+    } else {
+      t.owes = [...(base.owes ?? []), { id: crypto.randomUUID(), person, amount: Math.min(it.amount, base.amount) }];
+    }
+    updated.set(t.id, t);
+  }
   // Dọn khung chờ ngay (trước khi await) để câu nói kế tiếp không bị cuốn theo
   clearPreview();
   setMicStatus(DEFAULT_STATUS);
-  const unlocked = store.unlocked;
   try {
-    if (unlocked) await store.putTx(txs);
+    if (unlocked) await store.putTx([...txs, ...updated.values()]);
     // Đang khoá: mã hoá một chiều vào hộp chờ, mở khoá xong mới đọc được
-    else await store.addToInbox(txs.map((t, i) => ({ ...t, catAuto: p.items[i].category === p.items[i].suggested, assetAuto: !t.assetId })));
+    else await store.addToInbox(txs.map((t, i) => ({ ...t, catAuto: plain[i].category === plain[i].suggested, assetAuto: !t.assetId })));
   } catch {
     state.preview = state.preview ? { ...state.preview, items: [...p.items, ...state.preview.items] } : p;
     renderPreview();
@@ -764,19 +896,43 @@ async function savePreview() {
     return;
   }
   let note = '';
+  const done = [];
   if (unlocked) {
-    state.txs.push(...txs);
-    await learnFrom(txs);
+    state.txs = [...state.txs.map(t => updated.get(t.id) ?? t), ...txs];
+    await learnFrom(txs.filter((t, i) => plain[i].kind === 'tx'));
     renderTopbar();
-    note = assetNote(txs) + walletNote(txs);
+    for (const it of p.items) {
+      const t = updated.get(it.txId);
+      if (t) done.push(it.kind === 'refund' ? `↩️ ${displayPerson(it.person)} trả ${fmtCompact(it.amount)} cho “${t.name}”` : `🤝 ${displayPerson(it.person)} nợ ${fmtCompact(it.amount)} “${t.name}”`);
+    }
+    const refundTxs = [...updated.values()].map(t => ({ assetId: t.refunds?.at(-1)?.assetId })).filter(x => x.assetId);
+    note = assetNote([...txs, ...refundTxs]) + walletNote(txs);
   }
   // Có thể ghi từ tab bất kỳ → vẽ lại đúng tab đang xem
   renderView(state.view);
   navigator.storage?.persist?.();
   const ids = txs.map(t => t.id);
-  toast(`Đã lưu ${txs.length > 1 ? `${txs.length} khoản · ` : ''}${fmtVND(sum(txs))}${unlocked ? note : ' (đã mã hoá)'}`, {
-    action: 'Hoàn tác', onAction: () => (unlocked ? removeTx(ids) : store.deleteInbox(ids).then(renderToday)),
+  const head = [txs.length ? `Đã lưu ${txs.length > 1 ? `${txs.length} khoản · ` : ''}${fmtVND(sum(txs))}` : '', ...done].filter(Boolean).join(' · ');
+  toast(`${head}${unlocked ? note : ' (đã mã hoá)'}`, {
+    action: 'Hoàn tác',
+    onAction: async () => {
+      if (!unlocked) return store.deleteInbox(ids).then(renderToday);
+      if (originals.size) await restoreTxs([...originals.values()]);
+      if (ids.length) await removeTx(ids);
+      else toast('Đã hoàn tác');
+    },
   });
+}
+
+/** Trả các khoản về bản cũ (hoàn tác hoàn tiền / ghi nợ). */
+async function restoreTxs(list) {
+  const now = new Date().toISOString();
+  const back = list.map(t => ({ ...t, updatedAt: now }));
+  await store.putTx(back);
+  const byId = new Map(back.map(t => [t.id, t]));
+  state.txs = state.txs.map(t => byId.get(t.id) ?? t);
+  renderTopbar();
+  renderView(state.view);
 }
 
 // Ghi nhớ khi bạn chọn danh mục khác với gợi ý từ khoá
@@ -810,13 +966,26 @@ async function removeTx(ids) {
   toast(`Đã xoá ${ids.length} khoản`);
 }
 
+/** "↩️ Anh Lâm trả 257k · 🤝 Hùng còn nợ 100k · chi thực 243k" */
+function debtLine(t) {
+  if (!t.owes?.length && !t.refunds?.length && !(t.discount > 0)) return '';
+  const bits = [];
+  for (const e of owedOn(t).values()) {
+    if (e.paid) bits.push(`↩️ ${e.name} trả ${fmtCompact(e.paid)}`);
+    if (e.left) bits.push(`🤝 ${e.name} còn nợ ${fmtCompact(e.left)}`);
+  }
+  if (refundedOf(t)) bits.push(`chi thực ${fmtCompact(netAmount(t))}`);
+  if (t.discount > 0) bits.push(`🏷️ giảm ${fmtCompact(t.discount)} (gốc ${fmtCompact(originalOf(t))})`);
+  return `<span class="tx-splits tx-debt">${esc(bits.join(' · '))}</span>`;
+}
+
 function txItem(t, { showDate = false, timeline = false } = {}) {
   const c = catById(t.category);
   const sign = t.type === 'income' ? '+' : '−';
   const asset = t.assetId ? assetById(t.assetId) : null;
   const sub = (t.recurringId ? '🔁 ' : '') + (showDate ? `${dayLabel(t.date)} · ${c.name}` : c.name) + (asset ? ` · ${asset.icon} ${asset.name}` : '');
-  const splits = t.splits?.length
-    ? `<span class="tx-splits">${t.splits.map(s => `${esc(s.name)} ${fmtCompact(s.amount)}`).join(' · ')}</span>` : '';
+  const splits = (t.splits?.length
+    ? `<span class="tx-splits">${t.splits.map(s => `${esc(s.name)} ${fmtCompact(s.amount)}`).join(' · ')}</span>` : '') + debtLine(t);
   const btn = `<button type="button" class="tx tint-${c.tint}" data-id="${esc(t.id)}">
     <span class="tx-icon" aria-hidden="true">${esc(c.icon)}</span>
     <span class="tx-main"><span class="tx-name">${esc(t.name)}</span><span class="tx-sub">${esc(sub)}</span>${splits}</span>
@@ -836,13 +1005,14 @@ function renderSummary() {
     return;
   }
   const month = state.txs.filter(t => monthOf(t.date) === ym);
-  $('#sum-exp').textContent = fmtVND(sum(month.filter(t => t.type === 'expense')));
+  $('#sum-exp').textContent = fmtVND(spentOf(month));
   $('#sum-inc').textContent = fmtVND(sum(month.filter(t => t.type === 'income')));
 }
 
 async function renderToday() {
   renderSummary();
   renderAssets();
+  renderDebts();
   renderWallets();
   if (!store.unlocked) {
     $('#today-total').textContent = '';
@@ -854,7 +1024,7 @@ async function renderToday() {
   }
   const t = today();
   const list = state.txs.filter(x => x.date === t).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const spent = sum(list.filter(x => x.type === 'expense'));
+  const spent = spentOf(list);
   $('#today-total').textContent = list.length ? `đã chi ${fmtVND(spent)}` : '';
   $('#today-merge').hidden = list.length < 2;
   $('#today-list').innerHTML = list.length
@@ -904,7 +1074,7 @@ function renderHistory() {
     const inCat = sum(list.flatMap(partsOf).filter(p => p.category === cat));
     $('#hist-summary').textContent = list.length ? `${list.length} khoản · ${fmtVND(inCat)} thuộc ${catById(cat).name}` : '';
   } else {
-    const spent = sum(list.filter(t => t.type === 'expense'));
+    const spent = spentOf(list);
     const earned = sum(list.filter(t => t.type === 'income'));
     $('#hist-summary').textContent = list.length
       ? `${list.length} khoản · chi ${fmtVND(spent)}${earned ? ` · thu ${fmtVND(earned)}` : ''}`
@@ -914,7 +1084,7 @@ function renderHistory() {
   const groups = new Map();
   for (const t of list) groups.set(t.date, [...(groups.get(t.date) ?? []), t]);
   $('#hist-list').innerHTML = list.length ? [...groups].map(([date, items]) => {
-    const daySpent = sum(items.filter(t => t.type === 'expense'));
+    const daySpent = spentOf(items);
     return `<section class="card day-group">
       <h3 class="card-title"><span>${dayLabel(date)}</span><span class="muted">${daySpent ? `−${fmtVND(daySpent)}` : ''}</span></h3>
       <ul class="tx-list timeline">${items.map(t => txItem(t, { timeline: true })).join('')}</ul>
@@ -948,7 +1118,7 @@ function renderStats() {
   const isCurrent = ym === monthOf(t);
   const monthTx = state.txs.filter(x => monthOf(x.date) === ym);
   const exp = monthTx.filter(x => x.type === 'expense');
-  const spent = sum(exp);
+  const spent = spentOf(exp);
   const earned = sum(monthTx.filter(x => x.type === 'income'));
   const body = $('#stats-body');
 
@@ -960,7 +1130,7 @@ function renderStats() {
   const nDays = isCurrent ? Number(t.slice(8)) : daysInMonth(ym);
   // So với cùng kỳ tháng trước (tháng hiện tại chỉ so tới cùng ngày)
   const prevYm = shiftMonth(ym, -1);
-  const prevSpent = sum(state.txs.filter(x => x.type === 'expense' && monthOf(x.date) === prevYm
+  const prevSpent = spentOf(state.txs.filter(x => x.type === 'expense' && monthOf(x.date) === prevYm
     && (!isCurrent || Number(x.date.slice(8)) <= nDays)));
   let delta = '';
   if (prevSpent > 0) {
@@ -989,8 +1159,13 @@ function renderStats() {
     freq.set(k, e);
   }
   const frequent = [...freq.values()].filter(e => e.count > 1).sort((a, b) => b.count - a.count || b.sum - a.sum).slice(0, 5);
-  const biggest = [...exp].sort((a, b) => b.amount - a.amount).slice(0, 5);
+  const biggest = [...exp].sort((a, b) => netAmount(b) - netAmount(a)).slice(0, 5);
   const balance = earned - spent;
+  // Đã tính sẵn vào "Đã chi": phần bạn bè trả lại (trừ ra) và phần được giảm giá (không bao giờ trả)
+  const refundedMonth = exp.reduce((s, x) => s + refundedOf(x), 0);
+  const saved = savings(exp);
+  const extraKpi = [refundedMonth ? `↩️ Được trả lại ${fmtCompact(refundedMonth)}` : '',
+    saved.total ? `🏷️ Tiết kiệm nhờ giảm giá ${fmtCompact(saved.total)} (${saved.count} lần)` : ''].filter(Boolean).join(' · ');
 
   body.innerHTML = `
     <div class="kpis">
@@ -1000,6 +1175,7 @@ function renderStats() {
         <span class="kpi-value">${fmtVND(spent)}</span>
         ${delta}
         <span class="kpi-sub">Trung bình ${fmtVND(spent / nDays)}/ngày · ${exp.length} khoản</span>
+        ${extraKpi ? `<span class="kpi-sub">${esc(extraKpi)}</span>` : ''}
       </div>
       <div class="kpi"><span class="kpi-label">Thu nhập</span><span class="kpi-value">${earned ? fmtVND(earned) : '—'}</span></div>
       <div class="kpi"><span class="kpi-label">Còn lại</span><span class="kpi-value">${earned ? `${balance < 0 ? '−' : ''}${fmtVND(Math.abs(balance))}` : '—'}</span></div>
@@ -1127,9 +1303,99 @@ function addSplits(alts) {
   return true;
 }
 
+// ----- Chi hộ · được trả lại (trong Sửa khoản) -----
+let editOwes = [];
+let editRefunds = [];
+
+function renderDebtBox() {
+  const expense = editParent().type === 'expense';
+  $('#debt-box').hidden = !expense;
+  if (!expense) return;
+  const amount = editTotal();
+  const people = owedOn({ owes: editOwes, refunds: editRefunds });
+  const settled = new Set();
+  const assetLabel = id => { const a = id && assetById(id); return a ? ` · ${a.icon} ${a.name}` : ''; };
+  $('#debt-list').innerHTML = [
+    ...editOwes.map((o, i) => {
+      const key = personKey(o.person);
+      const left = !settled.has(key) && people.get(key)?.left;
+      settled.add(key);
+      return `<li class="debt-item"><span class="debt-text">🤝 <b>${esc(o.person)}</b> nợ ${fmtVND(o.amount)}</span>
+        ${left ? `<button type="button" class="btn chip-btn" data-debt-settle="${esc(key)}">↩️ Trả đủ ${fmtCompact(left)}</button>` : ''}
+        <button type="button" class="icon-btn" data-debt-del="owe:${i}" aria-label="Xoá dòng nợ">✕</button></li>`;
+    }),
+    ...editRefunds.map((r, i) => `<li class="debt-item"><span class="debt-text">↩️ <b>${esc(r.person)}</b> trả ${fmtVND(r.amount)} · ${esc(shortDate(r.date))}${esc(assetLabel(r.assetId))}</span>
+      <button type="button" class="icon-btn" data-debt-del="ref:${i}" aria-label="Xoá lần trả">✕</button></li>`),
+  ].join('');
+  const hasAssets = liveAssets(state.assets).length > 0;
+  $('#debt-asset-row').hidden = !hasAssets;
+  const refunded = sum(editRefunds);
+  const left = [...people.values()].reduce((s, e) => s + e.left, 0);
+  const el = $('#debt-sum');
+  el.className = `split-rest${refunded > amount ? ' over' : refunded || left ? ' done' : ''}`;
+  el.textContent = refunded > amount ? `Trả lại ${fmtVND(refunded)} — nhiều hơn số tiền khoản này`
+    : refunded || left ? [refunded ? `Đã được trả ${fmtVND(refunded)} · chi thực ${fmtVND(amount - refunded)}` : '', left ? `còn nợ ${fmtVND(left)}` : ''].filter(Boolean).join(' · ')
+      : 'Chi hộ ai thì ghi ở đây — khi họ trả lại, chi thực của bạn giảm theo.';
+}
+
+function updateDiscountHint() {
+  const f = editForm();
+  const paid = editTotal();
+  const d = parseDiscountInput(f.elements.discount.value, paid, parseMoney);
+  $('#edit-discount-hint').textContent = d == null ? 'Chưa hiểu — ví dụ 50k hoặc 20%'
+    : d ? `Giá gốc ${fmtVND(paid + d)} · đã trả ${fmtVND(paid)}` : 'Số tiền ở trên là số đã trả sau khi giảm';
+}
+
+function setupDebtBox() {
+  const person = $('#debt-person');
+  const amount = $('#debt-amount');
+  const read = () => {
+    const name = person.value.trim();
+    const v = parseMoney(amount.value);
+    if (!name || !(v > 0)) { toast(!name ? 'Nhập tên người' : 'Nhập số tiền'); return null; }
+    person.value = '';
+    amount.value = '';
+    return { name: displayPerson(name), v };
+  };
+  $('#debt-owe').addEventListener('click', () => {
+    const x = read();
+    if (!x) return;
+    editOwes.push({ id: crypto.randomUUID(), person: x.name, amount: x.v });
+    renderDebtBox();
+  });
+  const addRefund = (name, v) => editRefunds.push({
+    id: crypto.randomUUID(), person: name, amount: v, ...($('#debt-asset').value ? { assetId: $('#debt-asset').value } : {}),
+    date: today(), createdAt: new Date().toISOString(),
+  });
+  $('#debt-paid').addEventListener('click', () => {
+    const x = read();
+    if (!x) return;
+    addRefund(x.name, x.v);
+    renderDebtBox();
+  });
+  $('#debt-list').addEventListener('click', e => {
+    const del = e.target.closest('[data-debt-del]');
+    if (del) {
+      const [kind, i] = del.dataset.debtDel.split(':');
+      (kind === 'owe' ? editOwes : editRefunds).splice(Number(i), 1);
+      return renderDebtBox();
+    }
+    const settle = e.target.closest('[data-debt-settle]');
+    if (settle) {
+      const e2 = owedOn({ owes: editOwes, refunds: editRefunds }).get(settle.dataset.debtSettle);
+      if (e2?.left) addRefund(e2.name, e2.left);
+      renderDebtBox();
+    }
+  });
+  // Enter trong ô người / số tiền không bấm "Lưu" của cả hộp thoại
+  [person, amount].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); }));
+  editForm().elements.discount.addEventListener('input', updateDiscountHint);
+}
+
 function setupEditDialog() {
   const dlg = $('#edit-dialog');
   const f = editForm();
+  setupDebtBox();
   f.addEventListener('submit', async e => {
     if (e.submitter?.value !== 'save') return;
     const amount = editTotal();
@@ -1149,6 +1415,15 @@ function setupEditDialog() {
       renderSplitRest();
       return toast('Các món cộng lại vượt tổng tiền');
     }
+    const discount = parseDiscountInput(f.elements.discount.value, amount, parseMoney);
+    if (discount == null) {
+      e.preventDefault();
+      return toast('Số tiền được giảm chưa đúng — ví dụ 50k hoặc 20%');
+    }
+    if (sum(editRefunds) > amount) {
+      e.preventDefault();
+      return toast('Tiền được trả lại nhiều hơn số tiền khoản này');
+    }
     const t = state.txs.find(x => x.id === f.dataset.id);
     if (!t || !store.unlocked) return;
     const cat = editParent();
@@ -1164,6 +1439,13 @@ function setupEditDialog() {
     else delete t.splits;
     if (f.elements.assetId.value) t.assetId = f.elements.assetId.value;
     else delete t.assetId;
+    // Giảm giá, ai nợ, ai trả lại: chỉ có ở khoản chi
+    const expense = cat.type === 'expense';
+    const setList = (key, list) => { if (expense && list.length) t[key] = list.map(x => ({ ...x })); else delete t[key]; };
+    setList('owes', editOwes);
+    setList('refunds', editRefunds);
+    if (expense && discount) t.discount = discount;
+    else delete t.discount;
     await store.putTx([t]);
     await learnFrom([t, ...clean.map(s => ({ name: s.name, category: s.category, type: cat.type }))]);
     renderTopbar();
@@ -1173,8 +1455,12 @@ function setupEditDialog() {
   f.elements.amount.addEventListener('input', () => {
     f.elements.amount.setCustomValidity('');
     renderSplitRest();
+    renderDebtBox();
+    updateDiscountHint();
   });
   f.elements.category.addEventListener('change', () => {
+    $('#edit-discount-row').hidden = editParent().type !== 'expense';
+    renderDebtBox();
     // Đổi giữa Chi/Thu: món khác loại chuyển theo danh mục của hoá đơn
     const parent = editParent();
     editSplits.forEach(s => { if (catById(s.category).type !== parent.type) s.category = parent.id; });
@@ -1268,6 +1554,15 @@ function openEdit(id) {
   $('#edit-asset-row').hidden = !liveAssets(state.assets).length && !t.assetId;
   $('#edit-raw').textContent = t.raw ? `Câu gốc: “${t.raw}”` : '';
   editSplits = (t.splits ?? []).map(s => ({ ...s }));
+  editOwes = (t.owes ?? []).map(o => ({ ...o }));
+  editRefunds = (t.refunds ?? []).map(r => ({ ...r }));
+  f.elements.discount.value = t.discount ? fmtNum(t.discount) : '';
+  $('#edit-discount-row').hidden = t.type !== 'expense';
+  $('#debt-person').value = '';
+  $('#debt-amount').value = '';
+  $('#debt-asset').innerHTML = assetOptions(defaultAsset(state.assets)?.id ?? '', 'Không tính vào tài sản');
+  updateDiscountHint();
+  renderDebtBox();
   $('#split-input').value = '';
   $('#split-status').hidden = true;
   renderSplits();
@@ -1454,19 +1749,27 @@ function exportCsv() {
   if (!confirm('File CSV KHÔNG được mã hoá — ai có file cũng đọc được. Vẫn xuất?')) return;
   // Chặn công thức Excel trong tên (=, +, -, @)
   const q = v => `"${String(v ?? '').replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"`;
-  // Mỗi món của hoá đơn đã chia là một dòng, cột "Hoá đơn" cho biết thuộc khoản nào
-  const rows = [...state.txs].sort((a, b) => a.date.localeCompare(b.date)).flatMap(t => partsOf(t).map(p => [
+  // Mỗi món của hoá đơn đã chia là một dòng, cột "Hoá đơn" cho biết thuộc khoản nào.
+  // Số tiền = chi thực (đã trừ phần bạn bè trả lại); cột "Hoàn / nợ" ghi ai trả, ai còn nợ (ở dòng đầu của khoản)
+  const debtText = t => [...owedOn(t).values()].flatMap(e => [e.paid ? `${e.name} trả ${e.paid}` : '', e.left ? `${e.name} còn nợ ${e.left}` : ''])
+    .filter(Boolean).join('; ');
+  const rows = [...state.txs].sort((a, b) => a.date.localeCompare(b.date)).flatMap(t => partsOf(t).map((p, i) => [
     t.date, q(t.name), q(p.name), t.type === 'income' ? p.amount : -p.amount, t.type === 'income' ? 'Thu' : 'Chi',
-    q(catById(p.category).name), q(t.assetId ? (assetById(t.assetId)?.name ?? '') : ''), q(t.raw),
+    q(catById(p.category).name), q(t.assetId ? (assetById(t.assetId)?.name ?? '') : ''), q(i === 0 ? debtText(t) : ''), q(t.raw),
   ].join(',')));
-  download(`coin-manager-${today()}.csv`, `﻿Ngày,Hoá đơn,Món,Số tiền,Loại,Danh mục,Tài sản,Câu nói\n${rows.join('\n')}`, 'text/csv');
+  download(`coin-manager-${today()}.csv`, `﻿Ngày,Hoá đơn,Món,Số tiền,Loại,Danh mục,Tài sản,Hoàn / nợ,Câu nói\n${rows.join('\n')}`, 'text/csv');
 }
 
+const isValidOwe = o => o && typeof o.person === 'string' && !!o.person.trim() && Number.isFinite(o.amount) && o.amount > 0;
+const isValidRefund = r => isValidOwe(r) && /^\d{4}-\d{2}-\d{2}$/.test(r.date) && (r.assetId === undefined || typeof r.assetId === 'string');
 const isValidSplit = s => s && typeof s.name === 'string' && Number.isFinite(s.amount) && s.amount > 0 && typeof s.category === 'string';
 const isValidTx = t => t && typeof t.id === 'string' && typeof t.name === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
   && Number.isFinite(t.amount) && t.amount > 0 && (t.type === 'income' || t.type === 'expense') && typeof t.category === 'string'
   && (t.splits === undefined || (Array.isArray(t.splits) && t.splits.every(isValidSplit) && sum(t.splits) <= t.amount))
-  && (t.assetId === undefined || typeof t.assetId === 'string');
+  && (t.assetId === undefined || typeof t.assetId === 'string')
+  && (t.discount === undefined || (Number.isFinite(t.discount) && t.discount > 0))
+  && (t.owes === undefined || (Array.isArray(t.owes) && t.owes.every(isValidOwe)))
+  && (t.refunds === undefined || (Array.isArray(t.refunds) && t.refunds.every(isValidRefund) && sum(t.refunds) <= t.amount));
 
 async function readFileJson(input) {
   const file = input.files[0];
@@ -2187,6 +2490,80 @@ function setupAssets() {
   });
 }
 
+// ---------- Người khác nợ bạn (chi hộ bạn bè) ----------
+// Nợ nằm ngay trong khoản chi (owes / refunds, xem js/refunds.js) nên đồng bộ và mã hoá cùng khoản.
+
+let repayKey = null;
+
+function renderDebts() {
+  const card = $('#debt-card');
+  const debts = store.unlocked ? debtsByPerson(state.txs) : [];
+  card.hidden = !debts.length;
+  if (!debts.length) return;
+  $('#debt-total').textContent = `Tổng ${fmtCompact(debts.reduce((s, p) => s + p.left, 0))}`;
+  $('#debt-people').innerHTML = debts.map(p => `<li class="debt-person">
+      <span class="debt-who"><b>${esc(p.name)}</b><small>${esc(p.items.map(i => i.tx.name).slice(0, 3).join(', '))}${p.items.length > 3 ? ` +${p.items.length - 3}` : ''}</small></span>
+      <b class="debt-amt">${fmtCompact(p.left)}</b>
+      <button type="button" class="btn chip-btn" data-repay="${esc(p.key)}">↩️ Đã trả</button>
+    </li>`).join('');
+}
+
+function openRepay(key) {
+  const p = debtsByPerson(state.txs).find(x => x.key === key);
+  if (!p || !store.unlocked) return;
+  repayKey = key;
+  const f = $('#repay-form');
+  f.reset();
+  setFormError(f, '');
+  $('#repay-title').textContent = `↩️ ${p.name} trả lại`;
+  $('#repay-items').innerHTML = p.items.map(({ tx, left }) => {
+    const c = catById(tx.category);
+    return `<li class="merge-row tint-${c.tint}">
+      <span class="tx-icon" aria-hidden="true">${esc(c.icon)}</span>
+      <span class="tx-main"><span class="tx-name">${esc(tx.name)}</span><span class="tx-sub">${esc(dayLabel(tx.date))} · ${fmtCompact(tx.amount)}</span></span>
+      <span class="tx-amt">${fmtVND(left)}</span></li>`;
+  }).join('');
+  f.elements.amount.value = fmtNum(p.left);
+  f.elements.date.value = today();
+  f.elements.assetId.innerHTML = assetOptions(defaultAsset(state.assets)?.id ?? '', 'Không tính vào tài sản');
+  $('#repay-asset-row').hidden = !liveAssets(state.assets).length;
+  $('#repay-dialog').showModal();
+}
+
+function setupDebts() {
+  $('#debt-people').addEventListener('click', e => {
+    const b = e.target.closest('[data-repay]');
+    if (b) openRepay(b.dataset.repay);
+  });
+  const f = $('#repay-form');
+  f.addEventListener('submit', async e => {
+    if (e.submitter?.value !== 'ok' || !store.unlocked) return;
+    const p = debtsByPerson(state.txs).find(x => x.key === repayKey);
+    const amount = parseMoney(f.elements.amount.value);
+    if (!p || !(amount > 0) || amount > p.left) {
+      e.preventDefault();
+      return setFormError(f, !(amount > 0) ? 'Số tiền chưa hợp lệ.' : `${p?.name ?? 'Người này'} chỉ còn nợ ${fmtVND(p?.left ?? 0)}.`);
+    }
+    const now = new Date().toISOString();
+    const date = f.elements.date.value || today();
+    const assetId = f.elements.assetId.value;
+    const { plan } = planRepayment(state.txs, repayKey, amount);
+    const originals = plan.map(x => x.tx);
+    const updated = plan.map(({ tx, amount: a }) => ({
+      ...tx, updatedAt: now,
+      refunds: [...(tx.refunds ?? []), { id: crypto.randomUUID(), person: p.name, amount: a, ...(assetId ? { assetId } : {}), date, createdAt: now }],
+    }));
+    await store.putTx(updated);
+    const byId = new Map(updated.map(t => [t.id, t]));
+    state.txs = state.txs.map(t => byId.get(t.id) ?? t);
+    renderTopbar();
+    renderView(state.view);
+    toast(`↩️ ${p.name} trả ${fmtVND(amount)}${updated.length > 1 ? ` cho ${updated.length} khoản` : ''}${assetNote(assetId ? [{ assetId }] : [])}`, {
+      action: 'Hoàn tác', onAction: () => restoreTxs(originals),
+    });
+  });
+}
+
 // ---------- Khoản cố định hằng tháng ----------
 
 /** Ghi các khoản cố định đã tới ngày (ghi bù nếu lỡ). Trả về số khoản vừa ghi. */
@@ -2440,9 +2817,12 @@ function setupMerge() {
       category: cat.id,
       type: cat.type,
       // Khoản đã chia sẵn thì lấy từng món của nó, nên gộp lồng nhau vẫn phẳng
-      splits: originals.flatMap(t => partsOf(t).map(p => ({ id: crypto.randomUUID(), name: p.name, amount: p.amount, category: p.category }))),
+      splits: originals.flatMap(t => grossParts(t).map(p => ({ id: crypto.randomUUID(), name: p.name, amount: p.amount, category: p.category }))),
       raw: originals.map(t => t.raw).filter(Boolean).join(' · '),
       ...(originals[0].assetId ? { assetId: originals[0].assetId } : {}),
+      // Ai nợ / đã hoàn ở các khoản cũ đi theo hoá đơn gộp
+      ...(originals.some(t => t.owes?.length) ? { owes: originals.flatMap(t => t.owes ?? []) } : {}),
+      ...(originals.some(t => t.refunds?.length) ? { refunds: originals.flatMap(t => t.refunds ?? []) } : {}),
       createdAt: now,
       updatedAt: now,
     };

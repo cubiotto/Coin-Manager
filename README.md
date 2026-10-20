@@ -53,6 +53,24 @@ Thẻ **🏦 Tài sản** ở tab Hôm nay: tiền thật đang nằm ở đâu 
 
 **Tài sản khác Ví thế nào?** Ví (chia hũ) là ngân sách theo danh mục, Tài sản là nơi tiền nằm. Một khoản chi *"phở 55 tiền mặt"* vừa trừ ví *Ăn uống*, vừa trừ tài sản *Tiền mặt*.
 
+## Chi hộ bạn bè · được trả lại
+
+Trả tiền giúp bạn bè rồi họ trả lại: app ghi **ai trả, bao nhiêu, về tài sản nào**, và thống kê chỉ tính **chi thực** của bạn.
+
+- **Được trả lại:** *"Tiền mua game đã được anh Lâm trả lại 257k"* → app tìm khoản "Tiền mua game", ghi *↩️ Anh Lâm trả 257k*, chi thực còn 243k, tiền cộng vào tài sản mặc định (nói *"chuyển khoản"*, *"vào momo"* để chọn tài sản). Cũng hiểu *"anh Lâm trả lại tiền lẩu 250k"*, *"hoàn tiền vé phim từ chị Hoa 120k"*.
+- Không khớp tên khoản nào → chọn từ danh sách khoản gần đây (khoản đang có người nợ đứng đầu), hoặc *Ghi là khoản thu*.
+- **Ghi ai nợ ngay lúc chi:** *"lẩu năm trăm lâm nợ hai trăm rưỡi"*, *"lẩu năm trăm chia đôi với anh Lâm"*, *"pizza ba trăm chia đều với Lâm và Hùng"*. Thẻ **🤝 Người khác nợ bạn** ở tab Hôm nay liệt kê ai còn nợ bao nhiêu; bấm **↩️ Đã trả** (trả vào khoản cũ trước).
+- Đã ghi nợ rồi thì chỉ cần nói *"Lâm trả hai trăm rưỡi"* — app tự tìm khoản Lâm đang nợ. ("trả" một mình chỉ tính là hoàn tiền khi người đó có danh xưng như *anh/chị/bạn* hoặc đã từng nợ, để *"trả tiền nhà ba triệu"* vẫn là khoản chi.)
+- **Sửa khoản → 🤝 Chi hộ · được trả lại:** thêm / xoá người nợ, lần trả (có nút *Trả đủ*).
+- "anh Lâm", "Lâm", "lam" là cùng một người. Tiền trả lại **không phải khoản thu**; Thống kê có dòng *↩️ Được trả lại*.
+- Câu hoàn tiền lúc app đang khoá: cần mở khoá (phải đọc các khoản cũ mới biết hoàn cho khoản nào).
+
+## Giảm giá · voucher
+
+- *"pizza ba trăm giảm năm mươi"*, *"trà sữa 60k voucher 20k"*, *"áo 400k giảm 20%"* (hoặc *"giảm hai mươi phần trăm"*) → **số trước là giá gốc**, app ghi số đã trả (250k) kèm *🏷️ giảm 50k (gốc 300k)*.
+- Hiểu cả *được giảm, mã giảm giá, khuyến mãi, coupon, sale, chiết khấu, ưu đãi, bớt*.
+- Sửa trong **Sửa khoản → 🏷️ Được giảm** (nhập *50k* hoặc *20%*). Thống kê có dòng *🏷️ Tiết kiệm nhờ giảm giá*.
+
 ## Ví nhỏ (chia hũ)
 
 Thẻ **👛 Các ví** ở tab Hôm nay: chia thu nhập vào các ví như ăn uống, tiết kiệm, học phí… rồi nhìn là biết mỗi ví còn bao nhiêu.
@@ -199,6 +217,8 @@ js/charts.js           biểu đồ cột theo ngày, donut tỉ lệ (SVG, khô
 js/recurring.js        khoản cố định hằng tháng (tính ngày tới hạn, ghi bù)
 js/wallets.js          ví nhỏ / chia hũ (số dư, gợi ý chia tiền theo tỉ lệ)
 js/assets.js           tài sản (nhận diện "tiền mặt", "bằng momo" trong câu nói, số dư, chuyển / điều chỉnh)
+js/refunds.js          chi hộ bạn bè: ai nợ, ai trả lại ("đã được anh Lâm trả lại 257k"), chi thực
+js/discounts.js        giảm giá / voucher ("pizza 300 giảm 50", "giảm 20%")
 js/datepicker.js       lịch chọn ngày theo theme
 js/sheets.js           nút Back đóng hộp thoại, vuốt xuống để đóng bảng
 js/strips.js           cuộn hàng Ví / Tài sản bằng chuột trên máy tính (lăn chuột, nhấn giữ kéo)

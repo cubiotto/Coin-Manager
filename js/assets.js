@@ -7,7 +7,7 @@
 // Biến động: { id, date, kind: 'move' | 'adjust', from?, to?, asset?, amount, createdAt, updatedAt, deleted? }
 //            move   = chuyển `amount` từ `from` sang `to` (rút ATM, nạp Momo, trả thẻ) — không phải thu/chi
 //            adjust = cộng `amount` (âm hoặc dương) vào `asset` khi số dư thật bị lệch
-// Khoản thu/chi có assetId → số dư = opening + thu − chi ± chuyển ± điều chỉnh. Khoản cũ không có assetId thì không tính.
+// Khoản thu/chi có assetId → số dư = opening + thu − chi + tiền bạn bè hoàn lại ± chuyển ± điều chỉnh. Khoản cũ không có assetId thì không tính.
 
 import { normalize, stripAccents } from './categories.js';
 
@@ -144,6 +144,8 @@ export function assetBalances(assets, moves, txs, ym) {
     const s = add(t.assetId, t.type === 'income' ? t.amount : -t.amount);
     if (s && t.date?.startsWith(ym)) t.type === 'income' ? (s.monthIn += t.amount) : (s.monthOut += t.amount);
   }
+  // Bạn bè trả lại tiền chi hộ: cộng vào tài sản nhận (không phải khoản thu)
+  for (const t of txs ?? []) for (const r of t.refunds ?? []) if (r.assetId && r.amount > 0) add(r.assetId, r.amount);
   for (const m of liveMoves(moves, assets)) {
     if (m.kind === 'move') {
       add(m.from, -m.amount);
