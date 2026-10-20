@@ -61,6 +61,26 @@ export function parseDiscountInput(text, paid, parseMoney) {
   return v > 0 ? v : null;
 }
 
+/**
+ * Chia nhỏ hoá đơn có giảm giá: giá các món bạn đọc là giá TRƯỚC giảm → phần đã trả của từng món theo tỉ lệ
+ * (đã trả / giá gốc). Các món cộng lại đúng bằng cả hoá đơn thì phần lẻ dồn vào món lớn nhất để tổng = đúng số đã trả.
+ *  Siêu thị 300k giảm 50k, món 100/100/100 → 83.334 / 83.333 / 83.333 (= 250.000)
+ * @param prices giá gốc từng món · paid số đã trả cả hoá đơn · original giá gốc cả hoá đơn
+ */
+export function discountedShares(prices, paid, original) {
+  if (!(original > 0) || !(paid >= 0)) return prices.map(p => p || 0);
+  const ratio = Math.min(1, paid / original);
+  const shares = prices.map(p => (p > 0 ? Math.round(p * ratio) : 0));
+  const listed = prices.reduce((s, p) => s + (p > 0 ? p : 0), 0);
+  if (listed === original && shares.length) {
+    const diff = paid - shares.reduce((s, x) => s + x, 0);
+    let big = 0;
+    shares.forEach((x, i) => { if (x > shares[big]) big = i; });
+    shares[big] += diff;
+  }
+  return shares;
+}
+
 /** Tổng được giảm trong danh sách khoản: { total, count }. */
 export function savings(txs) {
   let total = 0;

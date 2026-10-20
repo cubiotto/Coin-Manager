@@ -3,7 +3,7 @@
 //
 // Mọi trang *.github.io của cùng một tài khoản dùng chung kho cache — chỉ đụng tới cache có tiền tố của app này.
 const PREFIX = 'coin-manager-';
-const CACHE = `${PREFIX}v14`;
+const CACHE = `${PREFIX}v15`;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/parser.js', './js/categories.js', './js/db.js', './js/store.js', './js/vault.js',

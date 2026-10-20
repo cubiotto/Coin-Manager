@@ -1,4 +1,4 @@
-import { extractDiscounts, prepPercent, parseDiscountInput, originalOf, savings } from '../js/discounts.js';
+import { extractDiscounts, prepPercent, parseDiscountInput, originalOf, savings, discountedShares } from '../js/discounts.js';
 import { parseUtterance, parseAmountInput } from '../js/parser.js';
 
 export function runDiscountTests() {
@@ -31,5 +31,13 @@ export function runDiscountTests() {
   check('giá gốc = đã trả + giảm', originalOf({ amount: 250000, discount: 50000 }) === 300000);
   const s = savings([{ type: 'expense', amount: 1, discount: 50000 }, { type: 'expense', amount: 1, discount: 30000 }, { type: 'expense', amount: 1 }]);
   check('tiết kiệm nhờ giảm giá: cộng cả tháng', s.total === 80000 && s.count === 2);
+  // Chia nhỏ hoá đơn có giảm giá
+  const sh = discountedShares([100000, 100000, 100000], 250000, 300000);
+  check('siêu thị 300k giảm 50k, chia 100/100/100 → tổng đúng 250k', sh.reduce((s, x) => s + x, 0) === 250000 && sh.every(x => Math.abs(x - 83333) <= 1), J(sh));
+  const sh2 = discountedShares([120000, 60000], 250000, 300000);
+  check('chia một phần (180k gốc) → 150k đã trả, phần còn lại để cho hoá đơn', J(sh2) === J([100000, 50000]), J(sh2));
+  check('không giảm giá → giữ nguyên giá món', J(discountedShares([30000, 20000], 50000, 50000)) === J([30000, 20000]));
+  const sh3 = discountedShares([99000, 1000], 80000, 100000);
+  check('món nhỏ không bị âm khi dồn phần lẻ', sh3.every(x => x >= 0) && sh3[0] + sh3[1] === 80000, J(sh3));
   return results;
 }

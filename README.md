@@ -70,6 +70,7 @@ Trả tiền giúp bạn bè rồi họ trả lại: app ghi **ai trả, bao nhi
 - *"pizza ba trăm giảm năm mươi"*, *"trà sữa 60k voucher 20k"*, *"áo 400k giảm 20%"* (hoặc *"giảm hai mươi phần trăm"*) → **số trước là giá gốc**, app ghi số đã trả (250k) kèm *🏷️ giảm 50k (gốc 300k)*.
 - Hiểu cả *được giảm, mã giảm giá, khuyến mãi, coupon, sale, chiết khấu, ưu đãi, bớt*.
 - Sửa trong **Sửa khoản → 🏷️ Được giảm** (nhập *50k* hoặc *20%*). Thống kê có dòng *🏷️ Tiết kiệm nhờ giảm giá*.
+- **Chia nhỏ hoá đơn có giảm giá:** đọc giá gốc từng món như trên hoá đơn (*"bánh 100 nước ngọt 100 rau 100"* cho siêu thị 300k giảm 50k) → app tự trừ giảm giá theo tỉ lệ, mỗi món *→ đã trả 83.333đ*, tổng khớp đúng 250k. Hoá đơn in sẵn giá đã giảm từng món thì bỏ chọn *"Giá các món là giá trước giảm"*.
 
 ## Ví nhỏ (chia hũ)
 

@@ -14,7 +14,7 @@ import {
   detectRefund, detectOwe, extractOwes, matchTargets, recentExpenses, knownPeople, netAmount, netParts, refundedOf, owedOn,
   debtsByPerson, planRepayment, personKey, displayPerson,
 } from './refunds.js';
-import { extractDiscounts, prepPercent, parseDiscountInput, originalOf, savings } from './discounts.js';
+import { extractDiscounts, prepPercent, parseDiscountInput, originalOf, savings, discountedShares } from './discounts.js';
 import {
   WALLET_ICONS, WALLET_SUGGEST, JARS, liveWallets, isSaving, parseShare, shareText, walletForCategory, planSplit,
   walletBalances, unallocated, upsertWallet, nextTint, nextOrder, monthStart,
@@ -1247,16 +1247,30 @@ const editForm = () => $('#edit-form');
 const editTotal = () => parseAmountInput(editForm().elements.amount.value, { slang: state.settings.slang }) ?? 0;
 const editParent = () => catById(editForm().elements.category.value);
 
+// Hoá đơn có giảm giá: giá món bạn đọc là giá trước giảm (bật mặc định) → tự trừ theo tỉ lệ (xem discountedShares).
+// editSplits[].amount luôn là số bạn gõ/đọc; phần đã trả của từng món tính lúc vẽ và lúc lưu.
+let editListPrice = true;
+const editDiscount = () => (editParent().type === 'expense' ? parseDiscountInput(editForm().elements.discount.value, editTotal(), parseMoney) ?? 0 : 0);
+const splitListMode = () => editListPrice && editDiscount() > 0;
+function editShares() {
+  const prices = editSplits.map(s => (s.amount > 0 ? s.amount : 0));
+  if (!splitListMode()) return prices;
+  const paid = editTotal();
+  return discountedShares(prices, paid, paid + editDiscount());
+}
+
 function renderSplits() {
   const type = editParent().type;
+  const list = splitListMode();
   $('#split-list').innerHTML = editSplits.map((s, i) => {
     const c = catById(s.category);
     return `<li class="split-item tint-${c.tint}" data-i="${i}">
       <span class="tx-icon" aria-hidden="true">${esc(c.icon)}</span>
       <input data-sf="name" value="${esc(s.name)}" placeholder="Tên món" aria-label="Tên món">
-      <span class="amount-field"><input data-sf="amount" value="${s.amount ? fmtNum(s.amount) : ''}" placeholder="Giá" aria-label="Giá món" autocomplete="off"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span>
+      <span class="amount-field"><input data-sf="amount" value="${s.amount ? fmtNum(s.amount) : ''}" placeholder="${list ? 'Giá gốc' : 'Giá'}" aria-label="${list ? 'Giá gốc của món' : 'Giá món'}" autocomplete="off"><span>đ</span><button type="button" class="calc-btn" data-calc aria-label="Mở máy tính">🧮</button></span>
       <select data-sf="category" aria-label="Danh mục của món">${categoryOptions(s.category, type)}</select>
       <button type="button" class="icon-btn split-del" data-i="${i}" aria-label="Bỏ món này">✕</button>
+      <span class="split-paid" hidden></span>
     </li>`;
   }).join('');
   renderSplitRest();
@@ -1265,12 +1279,41 @@ function renderSplits() {
 function renderSplitRest() {
   const el = $('#split-rest');
   el.className = 'split-rest';
+  const discount = editDiscount();
+  $('#split-list-price-row').hidden = !(discount > 0);
+  $('#split-list-price').checked = editListPrice;
+  const list = splitListMode();
+  // Từng món: "→ đã trả 83.333đ" (cập nhật tại chỗ để ô đang gõ không mất con trỏ)
+  const shares = editShares();
+  $$('#split-list .split-item').forEach((row, i) => {
+    const p = row.querySelector('.split-paid');
+    const show = list && editSplits[i]?.amount > 0;
+    p.hidden = !show;
+    if (show) p.textContent = `→ đã trả ${fmtVND(shares[i])}`;
+  });
   if (!editSplits.length) {
     el.innerHTML = '<span class="muted">Chưa chia. Ví dụ hoá đơn siêu thị 100k → nói <q>bánh 25 nước ngọt 25 rau 25</q>.</span>';
     return;
   }
+  const paid = editTotal();
+  if (list) {
+    // So bằng giá gốc: các món (giá gốc) cộng lại vs giá gốc cả hoá đơn
+    const original = paid + discount;
+    const listed = sum(editSplits.filter(s => s.amount > 0));
+    const rest = original - listed;
+    if (rest > 0) {
+      el.innerHTML = `Còn lại <b>${fmtVND(paid - shares.reduce((s, x) => s + x, 0))}</b> (giá gốc ${fmtVND(rest)}) → tính vào ${esc(editParent().icon)} ${esc(editParent().name)}`;
+    } else if (rest === 0) {
+      el.classList.add('done');
+      el.textContent = `✓ Đã chia hết · mỗi món giảm ${(discount / original * 100).toLocaleString('vi-VN', { maximumFractionDigits: 1 })}% theo tỉ lệ`;
+    } else {
+      el.classList.add('over');
+      el.textContent = `Các món (giá gốc) vượt giá gốc hoá đơn ${fmtVND(original)} là ${fmtVND(-rest)}`;
+    }
+    return;
+  }
   const used = sum(editSplits.filter(s => s.amount > 0));
-  const rest = editTotal() - used;
+  const rest = paid - used;
   if (rest > 0) {
     el.innerHTML = `Còn lại <b>${fmtVND(rest)}</b> → tính vào ${esc(editParent().icon)} ${esc(editParent().name)}`;
   } else if (rest === 0) {
@@ -1389,7 +1432,9 @@ function setupDebtBox() {
   });
   // Enter trong ô người / số tiền không bấm "Lưu" của cả hộp thoại
   [person, amount].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); }));
-  editForm().elements.discount.addEventListener('input', updateDiscountHint);
+  editForm().elements.discount.addEventListener('input', () => { updateDiscountHint(); renderSplits(); });
+  // Hoá đơn có giảm giá: giá món là giá trước giảm (tự trừ theo tỉ lệ) hay đã là giá sau giảm
+  $('#split-list-price').addEventListener('change', e => { editListPrice = e.target.checked; renderSplits(); });
 }
 
 function setupEditDialog() {
@@ -1405,20 +1450,24 @@ function setupEditDialog() {
       f.elements.amount.reportValidity();
       return;
     }
-    const splits = editSplits.filter(s => s.name.trim() || s.amount > 0);
-    if (splits.some(s => !(s.amount > 0))) {
+    const discount = parseDiscountInput(f.elements.discount.value, amount, parseMoney);
+    if (discount == null) {
+      e.preventDefault();
+      return toast('Số tiền được giảm chưa đúng — ví dụ 50k hoặc 20%');
+    }
+    // Giá gốc từng món → phần đã trả (khi hoá đơn có giảm giá và bật "giá trước giảm")
+    const list = splitListMode();
+    const allShares = editShares();
+    const splits = editSplits.map((s, i) => ({ ...s, price: s.amount, amount: allShares[i] }))
+      .filter(s => s.name.trim() || s.price > 0);
+    if (splits.some(s => !(s.price > 0))) {
       e.preventDefault();
       return toast('Có món chưa có giá');
     }
     if (sum(splits) > amount) {
       e.preventDefault();
       renderSplitRest();
-      return toast('Các món cộng lại vượt tổng tiền');
-    }
-    const discount = parseDiscountInput(f.elements.discount.value, amount, parseMoney);
-    if (discount == null) {
-      e.preventDefault();
-      return toast('Số tiền được giảm chưa đúng — ví dụ 50k hoặc 20%');
+      return toast(list ? 'Các món (giá gốc) cộng lại vượt giá gốc hoá đơn' : 'Các món cộng lại vượt tổng tiền');
     }
     if (sum(editRefunds) > amount) {
       e.preventDefault();
@@ -1429,6 +1478,7 @@ function setupEditDialog() {
     const cat = editParent();
     const clean = splits.map(s => ({
       id: s.id, name: capitalize(s.name.trim()) || 'Món', amount: s.amount,
+      ...(list && s.price !== s.amount ? { original: s.price } : {}),
       category: catById(s.category).type === cat.type ? catById(s.category).id : cat.id,
     }));
     Object.assign(t, {
@@ -1553,7 +1603,9 @@ function openEdit(id) {
   f.elements.assetId.innerHTML = assetOptions(t.assetId ?? '');
   $('#edit-asset-row').hidden = !liveAssets(state.assets).length && !t.assetId;
   $('#edit-raw').textContent = t.raw ? `Câu gốc: “${t.raw}”` : '';
-  editSplits = (t.splits ?? []).map(s => ({ ...s }));
+  // Món đã lưu giá gốc → hiện lại giá gốc để sửa; hoá đơn giảm giá đã chia mà không có giá gốc = đã nhập giá sau giảm
+  editSplits = (t.splits ?? []).map(s => ({ ...s, amount: s.original ?? s.amount }));
+  editListPrice = !t.splits?.length || t.splits.some(s => s.original);
   editOwes = (t.owes ?? []).map(o => ({ ...o }));
   editRefunds = (t.refunds ?? []).map(r => ({ ...r }));
   f.elements.discount.value = t.discount ? fmtNum(t.discount) : '';
@@ -1762,7 +1814,8 @@ function exportCsv() {
 
 const isValidOwe = o => o && typeof o.person === 'string' && !!o.person.trim() && Number.isFinite(o.amount) && o.amount > 0;
 const isValidRefund = r => isValidOwe(r) && /^\d{4}-\d{2}-\d{2}$/.test(r.date) && (r.assetId === undefined || typeof r.assetId === 'string');
-const isValidSplit = s => s && typeof s.name === 'string' && Number.isFinite(s.amount) && s.amount > 0 && typeof s.category === 'string';
+const isValidSplit = s => s && typeof s.name === 'string' && Number.isFinite(s.amount) && s.amount > 0 && typeof s.category === 'string'
+  && (s.original === undefined || (Number.isFinite(s.original) && s.original >= s.amount));
 const isValidTx = t => t && typeof t.id === 'string' && typeof t.name === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
   && Number.isFinite(t.amount) && t.amount > 0 && (t.type === 'income' || t.type === 'expense') && typeof t.category === 'string'
   && (t.splits === undefined || (Array.isArray(t.splits) && t.splits.every(isValidSplit) && sum(t.splits) <= t.amount))

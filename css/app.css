@@ -433,6 +433,7 @@ dialog.sheet { max-height: 92vh; overflow-y: auto; }
 .split-item .amount-field input { padding-right: 56px; }
 .split-item select { grid-column: 2 / -1; }
 .split-del { grid-column: 4; grid-row: 1; min-width: 32px; padding: 0; }
+.split-paid { grid-column: 2 / -1; font-size: 13px; font-weight: 700; color: var(--good); }
 .split-rest { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .split-rest.over { color: var(--bad); }
 .split-rest.done { color: var(--good); }
