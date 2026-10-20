@@ -9,6 +9,7 @@ import { mergeRows, mergeProfile, isTomb } from './sync.js';
 import * as gdrive from './gdrive.js';
 import { enhanceDateInputs } from './datepicker.js';
 import { openLayer, watchDialogs } from './sheets.js';
+import { enableMouseScroll } from './strips.js';
 import {
   WALLET_ICONS, WALLET_SUGGEST, JARS, liveWallets, isSaving, parseShare, shareText, walletForCategory, planSplit,
   walletBalances, unallocated, upsertWallet, nextTint, nextOrder, monthStart,
@@ -131,6 +132,7 @@ async function init() {
   setupCalc();
   setupWallets();
   setupAssets();
+  enableMouseScroll([$('#asset-strip'), $('#wallet-strip')]);
   enhanceDateInputs();
   watchDialogs();
   // Back đóng bảng đang mở → về mục lịch sử cũ; giữ địa chỉ đúng tab đang xem (để tải lại không nhảy tab)
@@ -1535,7 +1537,9 @@ function renderWallets() {
   $('#wallet-card').hidden = !store.unlocked;
   if (!store.unlocked) return;
   const ws = liveWallets(state.wallets);
+  // "+ Thêm ví" nằm ở hàng nút (luôn thấy) — để cuối hàng ô cuộn ngang thì có nhiều ví sẽ bị đẩy khuất
   $('#wallet-actions').hidden = !ws.length;
+  $('#wallet-move').hidden = ws.length < 2;
   const { free } = unallocated(incomeTxs(), state.allocs, state.wallets, monthOf(today()));
   $('#wallet-free').textContent = ws.length && free ? `💸 ${fmtCompact(free)} chưa chia` : '';
   if (!ws.length) {
@@ -1558,7 +1562,7 @@ function renderWallets() {
       <span class="wt-sub">${esc(sub)}</span>
       ${saving ? '' : `<span class="wt-track"><span class="wt-fill" data-w="${used.toFixed(1)}"></span></span>`}
     </button>`;
-  }).join('') + '<button type="button" class="wallet-tile wallet-add" data-wallet-new><span aria-hidden="true">+</span><span class="wt-sub">Thêm ví</span></button>';
+  }).join('');
   $$('#wallet-strip .wt-fill').forEach(el => { el.style.width = `${el.dataset.w}%`; });
 }
 
@@ -1920,7 +1924,9 @@ function renderAssets() {
   $('#asset-card').hidden = !store.unlocked;
   if (!store.unlocked) return;
   const list = liveAssets(state.assets);
-  $('#asset-actions').hidden = list.length < 2;
+  // "+ Thêm" nằm ở hàng nút (luôn thấy) — để cuối hàng ô cuộn ngang thì có nhiều tài sản sẽ bị đẩy khuất
+  $('#asset-actions').hidden = !list.length;
+  $('#asset-move').hidden = list.length < 2;
   if (!list.length) {
     $('#asset-total').textContent = '';
     $('#asset-strip').innerHTML = `<div class="wallet-empty">
@@ -1944,7 +1950,7 @@ function renderAssets() {
       <b class="wt-bal">${signedCompact(s.balance)}</b>
       <span class="wt-sub">${esc(sub)}</span>
     </button>`;
-  }).join('') + '<button type="button" class="wallet-tile wallet-add" data-asset-new><span aria-hidden="true">+</span><span class="wt-sub">Thêm</span></button>';
+  }).join('');
 }
 
 function refreshAssetViews() {

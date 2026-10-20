@@ -677,9 +677,10 @@ dialog label.switch { flex-direction: row; align-items: center; gap: 10px; font-
 .wt-fill { display: block; height: 100%; width: 0; background: var(--series); border-radius: 999px; }
 .wallet-tile.over .wt-bal { color: var(--bad); }
 .wallet-tile.over .wt-fill { background: var(--bad); }
-.wallet-add { width: 92px; align-items: center; justify-content: center; background: transparent; border: 2px dashed var(--border); }
-.wallet-add > span:first-child { font-size: 28px; font-weight: 900; color: var(--muted); line-height: 1; }
-.wallet-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 12px; }
+/* Hàng nút dưới các ô (luôn thấy, kể cả khi có nhiều ví / tài sản): "Chia tiền" chiếm cả hàng, các nút khác chia đều */
+.wallet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.wallet-actions .btn { flex: 1 1 0; min-width: 0; }
+#wallet-alloc { flex-basis: 100%; }
 .wallet-empty { padding: 0 16px; }
 .wallet-empty p { margin: 0; font-size: 14px; font-weight: 600; }
 .wallet-empty .btn-row { margin-bottom: 0; }
@@ -723,7 +724,15 @@ dialog label.icon-opt { display: block; position: relative; cursor: pointer; }
 
 /* ---------- Tài sản ---------- */
 .asset-card .card-title .muted.neg { color: var(--bad); }
-.asset-actions { grid-template-columns: minmax(0, 1fr); }
 .pv-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: center; }
 .pv-top.with-asset { grid-template-columns: minmax(0, 1fr) minmax(0, .9fr); }
 .filters.has-asset #hist-q { grid-column: 1 / -1; }
+
+/* Máy tính có chuột: hiện thanh cuộn mỏng cho hàng ô (Ví, Tài sản) và con trỏ "nắm kéo" (xem js/strips.js) */
+@media (hover: hover) and (pointer: fine) {
+  .wallet-strip { scrollbar-width: thin; scrollbar-color: var(--border) transparent; padding-bottom: 8px; cursor: grab; }
+  .wallet-strip::-webkit-scrollbar { display: block; height: 6px; }
+  .wallet-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+  .wallet-strip.dragging { cursor: grabbing; scroll-snap-type: none; user-select: none; }
+  .wallet-strip.dragging .wallet-tile { pointer-events: none; }
+}

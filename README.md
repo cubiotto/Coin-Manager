@@ -201,6 +201,7 @@ js/wallets.js          ví nhỏ / chia hũ (số dư, gợi ý chia tiền theo
 js/assets.js           tài sản (nhận diện "tiền mặt", "bằng momo" trong câu nói, số dư, chuyển / điều chỉnh)
 js/datepicker.js       lịch chọn ngày theo theme
 js/sheets.js           nút Back đóng hộp thoại, vuốt xuống để đóng bảng
+js/strips.js           cuộn hàng Ví / Tài sản bằng chuột trên máy tính (lăn chuột, nhấn giữ kéo)
 icons/duck*.svg        linh vật vịt (vẽ tay bằng SVG)
 fonts/                 Nunito (SIL OFL 1.1, xem fonts/OFL.txt) — tự host, không tải từ Google
 sw.js                  chạy offline
